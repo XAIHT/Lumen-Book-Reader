@@ -13,6 +13,33 @@ from bs4 import BeautifulSoup
 
 
 _WORD_RE = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*", re.UNICODE)
+_PHRASE_MATCH_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "was",
+        "were",
+        "with",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +307,14 @@ def parse_wikipedia_phrase(payload: bytes | str, selected_text: str) -> Dictiona
 
 
 def parse_datamuse_phrase(payload: bytes | str, selected_text: str) -> DictionaryEntry | None:
-    """Return one clearly labeled semantic interpretation of a complete phrase."""
+    """Return only a Datamuse result demonstrably tied to the complete phrase.
+
+    Datamuse's ``ml`` endpoint returns broadly related words, not guaranteed
+    definitions of the query.  Treating its first result as a phrase definition
+    can therefore produce convincing but unrelated cards.  A candidate is
+    accepted only when its headword is the phrase, a supported acronym, or its
+    definition contains lexical evidence for every meaningful phrase token.
+    """
     try:
         data: Any = json.loads(payload)
     except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
@@ -290,22 +324,31 @@ def parse_datamuse_phrase(payload: bytes | str, selected_text: str) -> Dictionar
     for item in data[:5]:
         if not isinstance(item, dict) or not item.get("defs"):
             continue
-        raw_definition = str(item["defs"][0]).strip()
-        part, separator, definition = raw_definition.partition("\t")
-        if not separator:
-            definition = part
-            part = ""
         related = str(item.get("word") or "").strip()
-        if related and related.casefold() != selected_text.casefold():
-            definition = f"Related expression “{related}”: {definition.strip()}"
-        return DictionaryEntry(
-            word=selected_text,
-            phonetic="",
-            part_of_speech=part,
-            definition=definition.strip(),
-            synonyms=(),
-            source="Datamuse phrase interpretation · online",
-        )
+        definitions = item.get("defs")
+        if not isinstance(definitions, list):
+            continue
+        for candidate in definitions[:3]:
+            raw_definition = str(candidate).strip()
+            part, separator, definition = raw_definition.partition("\t")
+            if not separator:
+                definition = part
+                part = ""
+            definition = definition.strip()
+            if not definition or not _datamuse_result_matches_phrase(
+                selected_text, related, definition
+            ):
+                continue
+            if related and _normalized_words(related) != _normalized_words(selected_text):
+                definition = f"Related expression “{related}”: {definition}"
+            return DictionaryEntry(
+                word=selected_text,
+                phonetic="",
+                part_of_speech=part,
+                definition=definition,
+                synonyms=(),
+                source="Datamuse verified phrase relation · online",
+            )
     return None
 
 
@@ -392,3 +435,70 @@ def _html_to_text(value: Any) -> str:
 
 def _definition_key(definition: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", definition.casefold()).strip()
+
+
+def _datamuse_result_matches_phrase(
+    selected_text: str, related: str, definition: str
+) -> bool:
+    """Reject broad semantic neighbors that do not explain the selected phrase."""
+    selected_words = _normalized_words(selected_text)
+    related_words = _normalized_words(related)
+    definition_words = _normalized_words(definition)
+    if len(selected_words) < 2:
+        return False
+
+    if related_words == selected_words:
+        return True
+
+    meaningful_selection = {
+        _light_stem(word)
+        for word in selected_words
+        if word not in _PHRASE_MATCH_STOPWORDS
+    }
+    evidence = {
+        _light_stem(word)
+        for word in (*related_words, *definition_words)
+        if word not in _PHRASE_MATCH_STOPWORDS
+    }
+
+    # Common phrase abbreviations such as "laughing out loud" -> "LOL" are
+    # strong identity evidence, but require definition overlap as protection
+    # against an unrelated abbreviation with the same initials.
+    acronym = "".join(word[0] for word in selected_words if word)
+    compact_related = "".join(related_words)
+    if (
+        2 <= len(acronym) <= 8
+        and compact_related == acronym
+        and meaningful_selection.intersection(evidence)
+    ):
+        return True
+
+    if len(meaningful_selection) < 2:
+        return False
+    return meaningful_selection.issubset(evidence)
+
+
+def _normalized_words(text: str) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).replace("’", "'")
+    return tuple(match.group(0).casefold() for match in _WORD_RE.finditer(normalized))
+
+
+def _light_stem(word: str) -> str:
+    """Normalize obvious English inflections without guessing word meanings."""
+    if len(word) > 5 and word.endswith("ing"):
+        stem = word[:-3]
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            stem = stem[:-1]
+        return stem
+    if len(word) > 4 and word.endswith("ied"):
+        return word[:-3] + "y"
+    if len(word) > 4 and word.endswith("ed"):
+        stem = word[:-2]
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            stem = stem[:-1]
+        return stem
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "is")):
+        return word[:-1]
+    return word

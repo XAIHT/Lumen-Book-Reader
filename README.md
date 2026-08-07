@@ -202,7 +202,7 @@ The conventional sources run concurrently:
 - **DictionaryAPI.dev** — online single-word senses, pronunciations, examples, and synonyms.
 - **English Wiktionary** — structured online word or phrase senses.
 - **English Wikipedia** — concise exact-title or redirect context for phrases.
-- **Datamuse** — related-expression interpretation for phrases.
+- **Datamuse** — phrase relations accepted only when the returned headword or definition contains verifiable evidence for the complete selection; broad semantic neighbors are discarded.
 
 Network failures are retried at staggered delays while time remains. Successful conventional results are cached atomically in dictionary-cache.json so they can be reused without waiting for the same service.
 

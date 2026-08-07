@@ -115,6 +115,40 @@ def test_phrase_sources_parse_complete_selection() -> None:
     interpretation = parse_datamuse_phrase(json.dumps(datamuse), "laughing out loud")
     assert interpretation is not None
     assert "Related expression “lol”" in interpretation.definition
+    assert interpretation.source == "Datamuse verified phrase relation · online"
+
+
+def test_datamuse_rejects_unrelated_neighbor_for_complete_phrase() -> None:
+    payload = [
+        {
+            "word": "field",
+            "defs": [
+                "n\tA land area free of woodland, cities, and towns; an area of open country."
+            ],
+        },
+        {
+            "word": "aic",
+            "defs": ["n\tAkaike information criterion used for statistical model selection."],
+        },
+    ]
+
+    assert parse_datamuse_phrase(json.dumps(payload), "addition is commutative") is None
+
+
+def test_datamuse_skips_unrelated_results_and_uses_phrase_evidence() -> None:
+    payload = [
+        {"word": "field", "defs": ["n\tAn area of open country."]},
+        {
+            "word": "commutative addition",
+            "defs": ["n\tAddition that is commutative regardless of operand order."],
+        },
+    ]
+
+    entry = parse_datamuse_phrase(json.dumps(payload), "addition is commutative")
+
+    assert entry is not None
+    assert "commutative addition" in entry.definition
+    assert "field" not in entry.definition.casefold()
 
 
 def test_dictionary_cache_persists_successful_results(tmp_path: Path) -> None:
