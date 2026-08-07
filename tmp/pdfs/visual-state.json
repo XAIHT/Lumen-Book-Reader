@@ -1,0 +1,27 @@
+{
+  "theme": "dark",
+  "font_size": 20,
+  "sidebar_visible": true,
+  "recent_books": [
+    {
+      "path": "C:\\Development\\Epub\\tmp\\pdfs\\lumen-pdf-fixture.pdf",
+      "title": "Lumen PDF Definition Fixture",
+      "author": "Lumen Test Lab"
+    }
+  ],
+  "books": {
+    "bacf36100e8a34eb4638e58c": {
+      "chapter": 0,
+      "scroll": 0.0,
+      "bookmarks": []
+    }
+  },
+  "definition_fallbacks": {
+    "contextual_inference": true,
+    "googler_enabled": true,
+    "googler_path": "C:\\Tlamatini\\agents\\googler",
+    "ollama_enabled": false,
+    "ollama_url": "http://127.0.0.1:11434",
+    "ollama_model": "glm-5.2:cloud"
+  }
+}

@@ -1,0 +1,4 @@
+PySide6>=6.7,<7
+beautifulsoup4>=4.12,<5
+nltk>=3.9,<4
+PyMuPDF>=1.26,<2
