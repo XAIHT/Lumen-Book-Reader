@@ -228,3 +228,7 @@ dist/
 *.epub
 *.pdf
 .env
+
+# Private local reading state -- NEVER commit / never push.
+# Contains local file paths, personal notes, quotes and highlights.
+lumen-reading-marks.json
