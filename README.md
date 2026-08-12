@@ -106,8 +106,10 @@ The home page lists supported books from the working directory together with rec
 
 - **☰** shows or hides the book panel.
 - **← My Library** saves the current location before returning to the shelf.
+- **Search from here** finds the next occurrence from the open page. Use the attached menu to search only the current page or the entire book, moving forward or backward. Press Enter repeatedly to advance.
 - **A−** and **A+** adjust EPUB type size. They are disabled for PDF because a PDF retains its original typography.
 - **Night / Paper / Sepia** changes the application and EPUB reading theme. For PDF, it changes the surrounding canvas without recoloring the document.
+- **⚡ Speed** opens the configurable fullscreen RSVP reader for EPUB and text-bearing PDF books. It starts at the current location; press Space to pause and Esc to return. See [SpeedReadingToolInLumenReader.md](SpeedReadingToolInLumenReader.md).
 - **◇ Definer** configures contextual analysis, Tlamatini Googler, and Ollama.
 - **Notes & Marks** opens the cross-book index.
 - **✦ Mark position** stores the exact reading location and an optional note.

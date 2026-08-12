@@ -6,6 +6,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from lumen_reader.book import EpubBook
+from lumen_reader.speed_reader import SpeedReadingDocument
 
 
 # Keep the regression suite deterministic even when the working library grows.
@@ -80,6 +81,15 @@ def test_full_text_search_is_case_insensitive(epub_path: Path) -> None:
             (item.chapter_index, item.match_count) for item in upper
         ]
         assert all(item.excerpt for item in lower)
+
+
+@pytest.mark.parametrize("epub_path", BOOKS, ids=lambda path: path.name[:45])
+def test_epub_spine_builds_complete_speed_reading_document(epub_path: Path) -> None:
+    with EpubBook(epub_path) as book:
+        document = SpeedReadingDocument.from_book(book)
+        assert len(document.chapters) == len(book.chapters)
+        assert document.total_words > 1_000
+        assert all(chapter.title for chapter in document.chapters)
 
 
 @pytest.mark.parametrize("epub_path", BOOKS, ids=lambda path: path.name[:45])

@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from lumen_reader.speed_reader import (
+    SpeedChapter,
+    SpeedReaderSettings,
+    SpeedReadingCursor,
+    SpeedReadingDocument,
+    contrast_ratio,
+    optimal_recognition_index,
+    presentation_timing,
+    tokenize_text,
+)
+
+
+def _document() -> SpeedReadingDocument:
+    return SpeedReadingDocument(
+        [
+            SpeedChapter("One", tokenize_text("Alpha beta. Gamma delta epsilon")),
+            SpeedChapter("Empty", []),
+            SpeedChapter("Two", tokenize_text("Zeta eta theta.")),
+        ]
+    )
+
+
+def test_cursor_chunks_do_not_cross_sentences_or_chapters() -> None:
+    cursor = SpeedReadingCursor(_document())
+    first = cursor.consume(5)
+    second = cursor.consume(5)
+    third = cursor.consume(5)
+
+    assert first is not None and first.words == ("Alpha", "beta.")
+    assert second is not None and second.words == ("Gamma", "delta", "epsilon")
+    assert third is not None and third.words == ("Zeta", "eta", "theta.")
+    assert third.chapter_index == 2
+    assert cursor.consume(5) is None
+
+
+def test_cursor_starts_from_section_scroll_and_seeks_globally() -> None:
+    document = _document()
+    cursor = SpeedReadingCursor(document, chapter_index=0, chapter_scroll=0.6)
+    assert cursor.word_index == 3
+    assert cursor.consume(1).text == "delta"
+
+    cursor.seek_global(5)
+    assert cursor.chapter_index == 2
+    assert cursor.consume(1).text == "Zeta"
+    cursor.seek_relative(-2)
+    assert cursor.chapter_index == 0
+    assert cursor.consume(1).text == "epsilon"
+
+
+def test_adaptive_timing_respects_punctuation_length_and_blank_interval() -> None:
+    document = SpeedReadingDocument(
+        [SpeedChapter("One", ["short", "extraordinarily", "done."])]
+    )
+    settings = SpeedReaderSettings(wpm=300, blank_percent=10, long_word_extra_ms=10)
+    cursor = SpeedReadingCursor(document)
+    short = cursor.consume(1)
+    long_word = cursor.consume(1)
+    sentence = cursor.consume(1)
+
+    short_visible, short_blank = presentation_timing(short, settings)
+    long_visible, _ = presentation_timing(long_word, settings)
+    sentence_visible, sentence_blank = presentation_timing(sentence, settings)
+    assert long_visible > short_visible
+    assert sentence_visible + sentence_blank > short_visible + short_blank
+    assert short_blank > 0
+
+
+def test_settings_round_trip_clamps_unsafe_or_invalid_values() -> None:
+    settings = SpeedReaderSettings.from_mapping(
+        {
+            "wpm": 9000,
+            "chunk_size": 0,
+            "blank_percent": "bad",
+            "text_color": "not-a-color",
+            "fullscreen": False,
+        }
+    )
+    assert settings.wpm == 1200
+    assert settings.chunk_size == 1
+    assert settings.blank_percent == SpeedReaderSettings().blank_percent
+    assert settings.text_color == SpeedReaderSettings().text_color
+    assert settings.fullscreen is False
+    assert SpeedReaderSettings.from_mapping(settings.to_dict()) == settings
+
+
+def test_focus_position_and_default_contrast_are_readable() -> None:
+    assert optimal_recognition_index("I") == 0
+    assert optimal_recognition_index("reading") == 2
+    defaults = SpeedReaderSettings()
+    assert contrast_ratio(defaults.text_color, defaults.background_color) >= 7.0

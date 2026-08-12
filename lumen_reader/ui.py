@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabWidget,
     QTextEdit,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -62,9 +64,15 @@ from .dictionary import (
     selection_lookup_delay_ms,
 )
 from .marks import MARKS_FILENAME, MarksStore, ReadingMark
-from .models import Bookmark, TocEntry
+from .models import Bookmark, SearchResult, TocEntry
 from .pdf_book import PdfBook, PdfError, PdfPasswordRequired
 from .storage import ReaderStore
+from .speed_reader import (
+    SpeedReaderDialog,
+    SpeedReaderSettings,
+    SpeedReaderSettingsDialog,
+    SpeedReadingDocument,
+)
 from .smart_definition import (
     DEFAULT_GOOGLER_PATH,
     DEFAULT_OLLAMA_MODEL,
@@ -105,6 +113,21 @@ def library_books(directory: Path) -> list[Path]:
 
 def generic_document_label(path: str | Path) -> str:
     return "PDF document" if Path(path).suffix.lower() == ".pdf" else "EPUB book"
+
+
+def search_results_from_page(
+    results: list[SearchResult], start_index: int, backward: bool = False
+) -> list[SearchResult]:
+    """Order full-book hits from the open page, wrapping once in the chosen direction."""
+    if backward:
+        return sorted(
+            results,
+            key=lambda result: (result.chapter_index > start_index, -result.chapter_index),
+        )
+    return sorted(
+        results,
+        key=lambda result: (result.chapter_index < start_index, result.chapter_index),
+    )
 
 
 # Installed with runJavaScript after every chapter/page load. EPUB scripts are
@@ -1237,6 +1260,13 @@ class ReaderWindow(QMainWindow):
         self.scroll_percent = 0.0
         self.pending_scroll = 0.0
         self.pending_find = ""
+        self.pending_find_backward = False
+        self._reader_search_scope = "book"
+        self._reader_search_backward = False
+        self._reader_search_results: list[SearchResult] = []
+        self._reader_search_position = -1
+        self._reader_search_occurrence = 0
+        self._reader_search_session: tuple[str, bool, int] | None = None
         self._slider_is_dragging = False
         self._building_toc = False
         self.dictionary_cache = DictionaryCache(self.store.path.parent / "dictionary-cache.json")
@@ -1349,6 +1379,41 @@ class ReaderWindow(QMainWindow):
         self.chapter_heading.setObjectName("chapterHeading")
         header_layout.addWidget(self.chapter_heading, 1)
 
+        self.reader_search_cluster = QFrame()
+        self.reader_search_cluster.setObjectName("readerSearchCluster")
+        self.reader_search_cluster.setFixedWidth(245)
+        search_cluster_layout = QHBoxLayout(self.reader_search_cluster)
+        search_cluster_layout.setContentsMargins(1, 1, 1, 1)
+        search_cluster_layout.setSpacing(0)
+
+        self.reader_search_edit = QLineEdit()
+        self.reader_search_edit.setObjectName("readerSearchEdit")
+        self.reader_search_edit.setPlaceholderText("Search from here…")
+        self.reader_search_edit.setClearButtonEnabled(True)
+        self.reader_search_edit.setFixedWidth(180)
+        self.reader_search_edit.setAccessibleName("Search the open book")
+        self.reader_search_edit.returnPressed.connect(self.run_reader_search)
+        self.reader_search_edit.textChanged.connect(self._reader_search_text_changed)
+        search_cluster_layout.addWidget(self.reader_search_edit)
+
+        self.reader_search_button = QPushButton("🔍")
+        self.reader_search_button.setObjectName("readerSearchButton")
+        self.reader_search_button.setFixedWidth(38)
+        self.reader_search_button.setAccessibleName("Find next match")
+        self.reader_search_button.clicked.connect(self.run_reader_search)
+        search_cluster_layout.addWidget(self.reader_search_button)
+
+        self.reader_search_options = QToolButton()
+        self.reader_search_options.setObjectName("readerSearchOptions")
+        self.reader_search_options.setText("▾")
+        self.reader_search_options.setFixedWidth(25)
+        self.reader_search_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.reader_search_options.setAccessibleName("Search scope and direction")
+        search_cluster_layout.addWidget(self.reader_search_options)
+        self._build_reader_search_menu()
+        self.reader_search_cluster.hide()
+        header_layout.addWidget(self.reader_search_cluster)
+
         self.smaller_button = QPushButton("A−")
         self.smaller_button.setObjectName("compactButton")
         self.smaller_button.setToolTip("Decrease text size")
@@ -1366,6 +1431,16 @@ class ReaderWindow(QMainWindow):
         self.theme_combo.setCurrentText(THEME_LABELS.get(current_theme, "Night"))
         self.theme_combo.currentTextChanged.connect(self._theme_changed)
         header_layout.addWidget(self.theme_combo)
+
+        self.speed_reader_button = QPushButton("⚡  Speed")
+        self.speed_reader_button.setObjectName("speedReaderButton")
+        self.speed_reader_button.setToolTip(
+            "Open the configurable rapid serial speed reader (Ctrl+Shift+R)"
+        )
+        self.speed_reader_button.setAccessibleName("Configure and start speed reading")
+        self.speed_reader_button.clicked.connect(self.show_speed_reader)
+        self.speed_reader_button.hide()
+        header_layout.addWidget(self.speed_reader_button)
 
         self.definer_button = QPushButton("◇  Definer")
         self.definer_button.setObjectName("toolButton")
@@ -1528,6 +1603,43 @@ class ReaderWindow(QMainWindow):
         layout.addWidget(self.tabs, 1)
         return sidebar
 
+    def _build_reader_search_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setObjectName("readerSearchMenu")
+        menu.addSection("SEARCH SCOPE")
+        scope_group = QActionGroup(menu)
+        scope_group.setExclusive(True)
+        self.search_current_page_action = QAction("Current page only", scope_group)
+        self.search_current_page_action.setCheckable(True)
+        self.search_entire_book_action = QAction("Entire book from here", scope_group)
+        self.search_entire_book_action.setCheckable(True)
+        self.search_entire_book_action.setChecked(True)
+        menu.addActions(scope_group.actions())
+        menu.addSeparator()
+        menu.addSection("DIRECTION")
+        direction_group = QActionGroup(menu)
+        direction_group.setExclusive(True)
+        self.search_forward_action = QAction("Forward", direction_group)
+        self.search_forward_action.setCheckable(True)
+        self.search_forward_action.setChecked(True)
+        self.search_backward_action = QAction("Backward", direction_group)
+        self.search_backward_action.setCheckable(True)
+        menu.addActions(direction_group.actions())
+        self.search_current_page_action.triggered.connect(
+            lambda checked: checked and self._set_reader_search_options(scope="page")
+        )
+        self.search_entire_book_action.triggered.connect(
+            lambda checked: checked and self._set_reader_search_options(scope="book")
+        )
+        self.search_forward_action.triggered.connect(
+            lambda checked: checked and self._set_reader_search_options(backward=False)
+        )
+        self.search_backward_action.triggered.connect(
+            lambda checked: checked and self._set_reader_search_options(backward=True)
+        )
+        self.reader_search_options.setMenu(menu)
+        self._update_reader_search_hint()
+
     def _build_footer(self) -> QWidget:
         footer = QFrame()
         footer.setObjectName("footer")
@@ -1561,6 +1673,7 @@ class ReaderWindow(QMainWindow):
     def _connect_shortcuts(self) -> None:
         QShortcut(QKeySequence.StandardKey.Open, self, activated=self.browse_for_book)
         QShortcut(QKeySequence.StandardKey.Find, self, activated=self.focus_search)
+        QShortcut(QKeySequence("Ctrl+Shift+R"), self, activated=self.show_speed_reader)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self.request_mark_position)
         QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=self.show_all_marks)
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.return_to_library)
@@ -1615,6 +1728,8 @@ class ReaderWindow(QMainWindow):
         self.pending_scroll = max(0.0, min(float(state.get("scroll", 0.0)), 1.0))
         self.scroll_percent = self.pending_scroll
         self._populate_book_panel()
+        self.reader_search_edit.clear()
+        self._reset_reader_search(clear_selection=True)
         self._migrate_legacy_bookmarks()
         self._populate_bookmarks()
         self._enter_reading_mode()
@@ -1665,6 +1780,8 @@ class ReaderWindow(QMainWindow):
             return
         self.main_stack.setCurrentIndex(1)
         self.library_button.show()
+        self.reader_search_cluster.show()
+        self.speed_reader_button.show()
         self.mark_button.setEnabled(True)
         self.setWindowTitle(f"{self.book.metadata.title} — Lumen")
 
@@ -1686,6 +1803,8 @@ class ReaderWindow(QMainWindow):
         self._dismiss_definition()
         self.main_stack.setCurrentIndex(0)
         self.library_button.hide()
+        self.reader_search_cluster.hide()
+        self.speed_reader_button.hide()
         self.mark_button.setEnabled(False)
         self.chapter_heading.setText("Your reading room")
         self.setWindowTitle("Lumen — Book Reader")
@@ -1743,7 +1862,13 @@ class ReaderWindow(QMainWindow):
         self.toc_tree.expandToDepth(0)
         self._building_toc = False
 
-    def show_chapter(self, index: int, scroll: float = 0.0, find_text: str = "") -> None:
+    def show_chapter(
+        self,
+        index: int,
+        scroll: float = 0.0,
+        find_text: str = "",
+        find_backward: bool = False,
+    ) -> None:
         if not self.book or not (0 <= index < len(self.book.chapters)):
             return
         self._clear_selection_candidate()
@@ -1753,6 +1878,7 @@ class ReaderWindow(QMainWindow):
         self.chapter_index = index
         self.pending_scroll = max(0.0, min(scroll, 1.0))
         self.pending_find = find_text
+        self.pending_find_backward = find_backward
         chapter = self.book.chapters[index]
         theme = str(self.store.data.get("theme", "dark"))
         font_size = int(self.store.data.get("font_size", 20))
@@ -1785,11 +1911,15 @@ class ReaderWindow(QMainWindow):
         self.web.page().runJavaScript(script)
         if self.pending_find:
             find_text = json.dumps(self.pending_find)
+            find_backward = "true" if self.pending_find_backward else "false"
             QTimer.singleShot(
                 120,
-                lambda: self.web.page().runJavaScript(f"window.find({find_text}, false, false, true);"),
+                lambda: self.web.page().runJavaScript(
+                    f"window.find({find_text}, false, {find_backward}, true);"
+                ),
             )
         self.pending_find = ""
+        self.pending_find_backward = False
 
     def next_chapter(self) -> None:
         if self.book and self.chapter_index + 1 < len(self.book.chapters):
@@ -1817,10 +1947,204 @@ class ReaderWindow(QMainWindow):
     def focus_search(self) -> None:
         if not self.book:
             return
-        self.sidebar.show()
-        self.tabs.setCurrentIndex(1)
-        self.search_box.setFocus()
-        self.search_box.selectAll()
+        self.reader_search_edit.setFocus()
+        self.reader_search_edit.selectAll()
+
+    def show_speed_reader(self) -> None:
+        """Configure and launch a format-neutral RSVP session from the current place."""
+        if not self.book or self.main_stack.currentIndex() == 0:
+            return
+        settings = SpeedReaderSettings.from_mapping(self.store.data.get("speed_reader"))
+        setup = SpeedReaderSettingsDialog(settings, self)
+        if setup.exec() != QDialog.DialogCode.Accepted:
+            return
+        settings = setup.settings
+        self.store.data["speed_reader"] = settings.to_dict()
+        self.store.save()
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            document = SpeedReadingDocument.from_book(self.book)
+        except (EpubError, PdfError, OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not start speed reading", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not document.total_words:
+            QMessageBox.information(
+                self,
+                "No readable text",
+                "This book has no extractable text for the speed reader. "
+                "Image-only PDFs require OCR before their words can be presented.",
+            )
+            return
+
+        player = SpeedReaderDialog(
+            document=document,
+            settings=settings,
+            book_title=self.book.metadata.title,
+            start_chapter=self.chapter_index,
+            start_scroll=self.scroll_percent,
+            parent=self,
+        )
+        QTimer.singleShot(0, player.start_session)
+        if settings.fullscreen:
+            player.showFullScreen()
+        player.exec()
+        chapter_index, chapter_scroll = player.reading_position()
+        # Retain live WPM adjustments made with the arrow keys for the next session.
+        self.store.data["speed_reader"] = player.settings.to_dict()
+        self.store.save()
+        self.show_chapter(chapter_index, chapter_scroll)
+
+    def _set_reader_search_options(
+        self, scope: str | None = None, backward: bool | None = None
+    ) -> None:
+        if scope is not None:
+            self._reader_search_scope = scope
+        if backward is not None:
+            self._reader_search_backward = backward
+        self._reset_reader_search(clear_selection=True)
+        self._update_reader_search_hint()
+
+    def _update_reader_search_hint(self) -> None:
+        scope = "current page" if self._reader_search_scope == "page" else "entire book"
+        direction = "backward" if self._reader_search_backward else "forward"
+        hint = f"Find {direction} in the {scope} (Enter)"
+        self.reader_search_button.setToolTip(hint)
+        self.reader_search_options.setToolTip(
+            f"Search scope: {scope}\nDirection: {direction}"
+        )
+
+    def _reader_search_text_changed(self, text: str) -> None:
+        self._reset_reader_search(clear_selection=not text.strip())
+
+    def _reset_reader_search(self, clear_selection: bool = False) -> None:
+        self._reader_search_results = []
+        self._reader_search_position = -1
+        self._reader_search_occurrence = 0
+        self._reader_search_session = None
+        self._set_reader_search_state("")
+        if clear_selection and hasattr(self, "web"):
+            self.web.page().runJavaScript(
+                "window.getSelection && window.getSelection().removeAllRanges();"
+            )
+
+    def _set_reader_search_state(self, state: str, message: str = "") -> None:
+        self.reader_search_cluster.setProperty("searchState", state)
+        self.reader_search_cluster.style().unpolish(self.reader_search_cluster)
+        self.reader_search_cluster.style().polish(self.reader_search_cluster)
+        if message:
+            self.reader_search_button.setToolTip(message)
+        else:
+            self._update_reader_search_hint()
+
+    def _find_on_rendered_page(
+        self, query: str, message: str = "", known_match: bool = False
+    ) -> None:
+        encoded_query = json.dumps(query)
+        backward = "true" if self._reader_search_backward else "false"
+        self.web.page().runJavaScript(
+            f"window.find({encoded_query}, false, {backward}, true);",
+            lambda found, searched=query, detail=message, expected=known_match: self._page_find_finished(
+                found, searched, detail, expected
+            ),
+        )
+
+    def _page_find_finished(
+        self, found: Any, query: str, message: str, known_match: bool
+    ) -> None:
+        if query != self.reader_search_edit.text().strip():
+            return
+        matched = bool(found) or known_match
+        if matched:
+            self._set_reader_search_state("found", message or "Match found on this page")
+        else:
+            self._set_reader_search_state("miss", "No matches on this page")
+
+    def run_reader_search(self) -> None:
+        if not self.book:
+            return
+        query = self.reader_search_edit.text().strip()
+        if not query:
+            self._set_reader_search_state("miss", "Type a word or phrase to search")
+            self.reader_search_edit.setFocus()
+            return
+        if self._reader_search_scope == "page":
+            self._find_on_rendered_page(query)
+            return
+        self._run_reader_book_search(query)
+
+    def _run_reader_book_search(self, query: str) -> None:
+        if not self.book:
+            return
+        session_matches = (
+            self._reader_search_session is not None
+            and self._reader_search_session[:2] == (query, self._reader_search_backward)
+            and 0 <= self._reader_search_position < len(self._reader_search_results)
+            and self._reader_search_results[self._reader_search_position].chapter_index
+            == self.chapter_index
+        )
+        if not session_matches:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                results = self.book.search(query, limit=len(self.book.chapters))
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._reader_search_results = search_results_from_page(
+                results, self.chapter_index, self._reader_search_backward
+            )
+            self._reader_search_position = 0 if self._reader_search_results else -1
+            self._reader_search_session = (
+                query,
+                self._reader_search_backward,
+                self.chapter_index,
+            )
+            if not self._reader_search_results:
+                self._set_reader_search_state("miss", "No matches in this book")
+                return
+            result = self._reader_search_results[0]
+            self._reader_search_occurrence = (
+                result.match_count if self._reader_search_backward else 1
+            )
+            self._show_reader_search_result(result, query)
+            return
+
+        result = self._reader_search_results[self._reader_search_position]
+        has_another_on_page = (
+            self._reader_search_occurrence > 1
+            if self._reader_search_backward
+            else self._reader_search_occurrence < result.match_count
+        )
+        if has_another_on_page:
+            self._reader_search_occurrence += -1 if self._reader_search_backward else 1
+        else:
+            self._reader_search_position = (
+                self._reader_search_position + 1
+            ) % len(self._reader_search_results)
+            result = self._reader_search_results[self._reader_search_position]
+            self._reader_search_occurrence = (
+                result.match_count if self._reader_search_backward else 1
+            )
+        self._show_reader_search_result(result, query)
+
+    def _show_reader_search_result(self, result: SearchResult, query: str) -> None:
+        if not self.book:
+            return
+        unit = "page" if getattr(self.book, "document_type", "EPUB") == "PDF" else "section"
+        detail = (
+            f"Match {self._reader_search_occurrence} of {result.match_count} in {unit} "
+            f"{result.chapter_index + 1}; Enter finds the next match"
+        )
+        self._set_reader_search_state("found", detail)
+        if result.chapter_index == self.chapter_index:
+            self._find_on_rendered_page(query, detail, known_match=True)
+        else:
+            self.show_chapter(
+                result.chapter_index,
+                find_text=query,
+                find_backward=self._reader_search_backward,
+            )
 
     def run_search(self) -> None:
         if not self.book:
@@ -2630,6 +2954,21 @@ class ReaderWindow(QMainWindow):
             current = current.parentWidget()
         return False
 
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        if not hasattr(self, "reader_search_edit"):
+            return
+        if self.width() >= 1500:
+            edit_width = 210
+        elif self.width() >= 1280:
+            edit_width = 180
+        elif self.width() >= 1100:
+            edit_width = 130
+        else:
+            edit_width = 90
+        self.reader_search_edit.setFixedWidth(edit_width)
+        self.reader_search_cluster.setFixedWidth(edit_width + 65)
+
     def eventFilter(self, watched: Any, event: Any) -> bool:
         """Route precision-trackpad scrolls received by non-scrollable chrome.
 
@@ -2642,6 +2981,15 @@ class ReaderWindow(QMainWindow):
             return super().eventFilter(watched, event)
         if watched is not self and not self.isAncestorOf(watched):
             return super().eventFilter(watched, event)
+        if watched is self.reader_search_edit and event.type() in {
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
+        }:
+            self.reader_search_cluster.setProperty(
+                "searchFocus", event.type() == QEvent.Type.FocusIn
+            )
+            self.reader_search_cluster.style().unpolish(self.reader_search_cluster)
+            self.reader_search_cluster.style().polish(self.reader_search_cluster)
         if (
             event.type() in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
             and self._is_inside(watched, self.web)
@@ -2799,6 +3147,8 @@ class ReaderWindow(QMainWindow):
             #iconButton {{ font-size: 19px; min-width: 30px; padding: 6px; }}
             #compactButton {{ background: {c['panel2']}; border-color: {c['line']}; min-width: 34px; }}
             #toolButton, #subtleButton {{ background: {c['panel2']}; border-color: {c['line']}; }}
+            #speedReaderButton {{ color: {c['accent']}; background: {c['accent2']}; border: 1px solid {c['accent']}; font-weight: 700; }}
+            #speedReaderButton:hover {{ color: #09130f; background: {c['accent']}; }}
             #primaryButton, #primarySmallButton {{ background: {c['accent']}; color: #09130f; font-weight: 700; border: none; }}
             #primaryButton:hover, #primarySmallButton:hover {{ background: {c['accent']}; }}
             QComboBox {{ color: {c['fg']}; background: {c['panel2']}; border: 1px solid {c['line']}; border-radius: 7px; padding: 7px 28px 7px 10px; }}
@@ -2829,6 +3179,21 @@ class ReaderWindow(QMainWindow):
             QTreeWidget::item:hover, QListWidget::item:hover {{ background: {c['hover']}; }}
             QLineEdit {{ color: {c['fg']}; background: {c['panel2']}; border: 1px solid {c['line']}; border-radius: 7px; padding: 8px 9px; selection-background-color: {c['accent']}; }}
             QLineEdit:focus {{ border-color: {c['accent']}; }}
+            #readerSearchCluster {{ background: {c['panel2']}; border: 1px solid {c['line']}; border-radius: 9px; }}
+            #readerSearchCluster[searchFocus="true"], #readerSearchCluster[searchState="found"] {{ border-color: {c['accent']}; }}
+            #readerSearchCluster[searchState="miss"] {{ border-color: #d87373; }}
+            #readerSearchEdit {{ background: transparent; border: none; border-radius: 0; padding: 7px 9px; }}
+            #readerSearchEdit:focus {{ border: none; }}
+            #readerSearchButton {{ color: {c['fg']}; background: transparent; border: none; border-left: 1px solid {c['line']}; border-radius: 0; padding: 6px 4px; font-size: 14px; }}
+            #readerSearchButton:hover {{ color: #09130f; background: {c['accent']}; border-color: {c['accent']}; }}
+            #readerSearchOptions {{ color: {c['muted']}; background: transparent; border: none; border-left: 1px solid {c['line']}; border-radius: 0; border-top-right-radius: 8px; border-bottom-right-radius: 8px; padding: 6px 2px; }}
+            #readerSearchOptions:hover, #readerSearchOptions::menu-button:hover {{ color: #09130f; background: {c['accent']}; }}
+            #readerSearchOptions::menu-indicator {{ image: none; width: 0; }}
+            #readerSearchMenu {{ color: {c['fg']}; background: {c['panel2']}; border: 1px solid {c['line']}; padding: 7px; }}
+            #readerSearchMenu::item {{ border-radius: 6px; padding: 7px 28px 7px 10px; }}
+            #readerSearchMenu::item:selected {{ background: {c['hover']}; }}
+            #readerSearchMenu::item:checked {{ color: {c['accent']}; background: {c['accent2']}; }}
+            #readerSearchMenu::separator {{ background: {c['line']}; height: 1px; margin: 6px 4px; }}
             QTextEdit {{ color: {c['fg']}; background: {c['panel2']}; border: 1px solid {c['line']}; border-radius: 7px; padding: 8px 9px; selection-background-color: {c['accent']}; }}
             QTextEdit:focus {{ border-color: {c['accent']}; }}
             #dialogHeading {{ color: {c['fg']}; font-size: 23px; font-weight: 700; }}

@@ -19,6 +19,7 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 
 from lumen_reader.pdf_book import PdfBook, PdfPasswordRequired
+from lumen_reader.speed_reader import SpeedReadingDocument
 from lumen_reader.storage import ReaderStore
 from lumen_reader.ui import (
     READER_INTERACTION_GUARD_SCRIPT,
@@ -149,6 +150,15 @@ def test_pdf_search_and_page_url_mapping_are_case_insensitive(pdf_path: Path) ->
         )
         assert index == 1
         assert fragment == "selection"
+
+
+def test_pdf_text_layer_builds_complete_speed_reading_document(pdf_path: Path) -> None:
+    with PdfBook(pdf_path) as book:
+        document = SpeedReadingDocument.from_book(book)
+        assert len(document.chapters) == 3
+        assert document.total_words > 20
+        assert "copykittens" in document.chapters[0].words
+        assert document.chapters[1].words[:3] == ["Laughing", "Out", "Loud"]
 
 
 def test_rotated_pdf_page_keeps_render_and_text_coordinates_aligned(

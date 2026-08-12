@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .smart_definition import default_definition_fallbacks
+from .speed_reader import DEFAULT_SPEED_READER_SETTINGS
 
 
 DEFAULT_DATA: dict[str, Any] = {
@@ -16,6 +17,7 @@ DEFAULT_DATA: dict[str, Any] = {
     "recent_books": [],
     "books": {},
     "definition_fallbacks": default_definition_fallbacks(),
+    "speed_reader": DEFAULT_SPEED_READER_SETTINGS,
 }
 
 
