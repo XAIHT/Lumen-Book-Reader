@@ -14,7 +14,6 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeyEvent, QMouseEvent, Q
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
-    QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFontComboBox,
@@ -23,12 +22,15 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from .dialog_layout import ScreenFittingDialog
 
 
 WORD_RE = re.compile(r"\S+", re.UNICODE)
@@ -394,7 +396,7 @@ class SpeedWordDisplay(QWidget):
             painter.drawLine(center, bottom, center, bottom + 12)
 
 
-class SpeedReaderSettingsDialog(QDialog):
+class SpeedReaderSettingsDialog(ScreenFittingDialog):
     """Settings-first launch dialog with a live RSVP appearance preview."""
 
     def __init__(self, settings: SpeedReaderSettings, parent: QWidget | None = None):
@@ -404,8 +406,18 @@ class SpeedReaderSettingsDialog(QDialog):
         self.resize(760, 720)
         self._initial = settings
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 22, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("speedSettingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content.setObjectName("speedSettingsContent")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(12, 10, 12, 8)
+        body.setSpacing(14)
 
         heading = QLabel("⚡  Speed Reader Studio")
         heading.setObjectName("speedSettingsHeading")
@@ -415,17 +427,17 @@ class SpeedReaderSettingsDialog(QDialog):
         )
         intro.setWordWrap(True)
         intro.setObjectName("speedSettingsIntro")
-        root.addWidget(heading)
-        root.addWidget(intro)
+        body.addWidget(heading)
+        body.addWidget(intro)
 
         self.preview = SpeedWordDisplay(settings)
         self.preview.setObjectName("speedPreview")
         self.preview.setFixedHeight(150)
         self.preview.set_text("Luminous reading")
-        root.addWidget(self.preview)
+        body.addWidget(self.preview)
 
         tabs = QTabWidget()
-        root.addWidget(tabs, 1)
+        body.addWidget(tabs, 1)
         pace_page = QWidget()
         pace_form = QFormLayout(pace_page)
         pace_form.setContentsMargins(18, 18, 18, 18)
@@ -489,7 +501,9 @@ class SpeedReaderSettingsDialog(QDialog):
         )
         caution.setWordWrap(True)
         caution.setObjectName("speedCaution")
-        root.addWidget(caution)
+        body.addWidget(caution)
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Start speed reading")
@@ -570,6 +584,7 @@ class SpeedReaderSettingsDialog(QDialog):
     def _style() -> str:
         return """
             QDialog { background: #0c1017; color: #eef2ef; }
+            #speedSettingsScroll, #speedSettingsContent { background: #0c1017; border: none; }
             QWidget { font-family: 'Segoe UI'; font-size: 13px; }
             #speedSettingsHeading { color: #76ffb2; font-size: 24px; font-weight: 750; }
             #speedSettingsIntro { color: #a1aaba; font-size: 13px; }
@@ -585,7 +600,7 @@ class SpeedReaderSettingsDialog(QDialog):
         """
 
 
-class SpeedReaderDialog(QDialog):
+class SpeedReaderDialog(ScreenFittingDialog):
     """Immersive, keyboard-first RSVP player over a complete book document."""
 
     def __init__(

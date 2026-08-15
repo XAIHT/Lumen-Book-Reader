@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from .book import EpubBook, EpubError
+from .dialog_layout import ScreenFittingDialog
 from .dictionary import (
     DictionaryCache,
     DictionaryEntry,
@@ -817,7 +818,7 @@ class DefinitionCard(QFrame):
         self.move(x, y)
 
 
-class MarkPositionDialog(QDialog):
+class MarkPositionDialog(ScreenFittingDialog):
     """Collect an optional note and tags for a reading position."""
 
     def __init__(
@@ -895,7 +896,7 @@ class MarkPositionDialog(QDialog):
         return [tag.strip() for tag in self.tags_edit.text().split(",") if tag.strip()]
 
 
-class MarksManagerDialog(QDialog):
+class MarksManagerDialog(ScreenFittingDialog):
     """Search, edit, and open notes from every book in the library."""
 
     open_requested = Signal(str)
@@ -1056,7 +1057,7 @@ class MarksManagerDialog(QDialog):
             self.changed.emit()
 
 
-class DefinitionSettingsDialog(QDialog):
+class DefinitionSettingsDialog(ScreenFittingDialog):
     """Configuration and live Ollama discovery for the deep-definition ladder."""
 
     def __init__(self, parent: QWidget, values: dict[str, Any]):
@@ -1679,6 +1680,8 @@ class ReaderWindow(QMainWindow):
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.return_to_library)
         QShortcut(QKeySequence("Ctrl+Right"), self, activated=self.next_chapter)
         QShortcut(QKeySequence("Ctrl+Left"), self, activated=self.previous_chapter)
+        QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, activated=self.next_chapter)
+        QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, activated=self.previous_chapter)
         QShortcut(QKeySequence("Ctrl+0"), self, activated=self._reset_font_size)
         QShortcut(QKeySequence("Ctrl++"), self, activated=lambda: self._change_font_size(1))
         QShortcut(QKeySequence("Ctrl+-"), self, activated=lambda: self._change_font_size(-1))
