@@ -18,7 +18,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 
-from lumen_reader.pdf_book import PdfBook, PdfPasswordRequired
+from lumen_reader.pdf_book import PdfBook, PdfPasswordRequired, _clean_text
 from lumen_reader.speed_reader import SpeedReadingDocument
 from lumen_reader.storage import ReaderStore
 from lumen_reader.ui import (
@@ -96,6 +96,19 @@ def test_pdf_metadata_outline_pages_and_cover(pdf_path: Path) -> None:
         rendered_cover = pymupdf.Pixmap(cover)
         assert rendered_cover.width > 1200
         assert rendered_cover.height > 1500
+
+
+def test_pdf_text_cleanup_removes_invalid_unicode_padding() -> None:
+    corrupted_outline = (
+        "Examining the notes and their components"
+        + "\udcc0\udc80" * 48
+    )
+
+    assert _clean_text(corrupted_outline) == "Examining the notes and their components"
+    assert (
+        _clean_text("Music Theory For Dummies\ufffd, 4th Edition")
+        == "Music Theory For Dummies, 4th Edition"
+    )
 
 
 def test_every_pdf_page_renders_with_original_image_and_selectable_text(pdf_path: Path) -> None:

@@ -5,11 +5,70 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QTimer
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtGui import QGuiApplication, QWheelEvent
+from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFontComboBox,
+    QSpinBox,
+    QWidget,
+)
 
 
 DIALOG_SCREEN_MARGIN = 16
+
+
+def _pass_wheel_to_scroll_area(widget: QWidget, event: QWheelEvent) -> None:
+    """Forward a value control's wheel gesture to its nearest scroll container."""
+    current = widget.parentWidget()
+    while current is not None:
+        if isinstance(current, QAbstractScrollArea):
+            forwarded = QWheelEvent(
+                event.position(),
+                event.globalPosition(),
+                event.pixelDelta(),
+                event.angleDelta(),
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+            )
+            QApplication.sendEvent(current.viewport(), forwarded)
+            event.accept()
+            return
+        current = current.parentWidget()
+    event.ignore()
+
+
+class WheelSafeSpinBox(QSpinBox):
+    """A spin box whose value cannot be changed by incidental wheel scrolling."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        _pass_wheel_to_scroll_area(self, event)
+
+
+class WheelSafeDoubleSpinBox(QDoubleSpinBox):
+    """A decimal spin box whose value cannot be changed by the mouse wheel."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        _pass_wheel_to_scroll_area(self, event)
+
+
+class WheelSafeComboBox(QComboBox):
+    """A combo box that leaves closed-control wheel gestures to its container."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        _pass_wheel_to_scroll_area(self, event)
+
+
+class WheelSafeFontComboBox(QFontComboBox):
+    """A font picker that cannot be changed while the settings page scrolls."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        _pass_wheel_to_scroll_area(self, event)
 
 
 def fitted_rect(

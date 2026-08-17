@@ -25,13 +25,24 @@ class PdfPasswordRequired(PdfError):
 
 
 _SPACE_RE = re.compile(r"\s+")
+_INVALID_TEXT_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff\ufffd]+"
+)
+_SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([,.;:!?])")
 _MAX_RENDER_EDGE = 4096
 _TARGET_RENDER_SCALE = 2.25
 _CONTEXT_RADIUS = 4
 
 
 def _clean_text(value: str | None) -> str:
-    return _SPACE_RE.sub(" ", value or "").strip()
+    # Some malformed PDF strings are returned by MuPDF with surrogate-escaped
+    # byte padding (for example repeated U+DCC0/U+DC80 pairs). Qt must replace
+    # those invalid Unicode scalars with visible replacement glyphs. Remove
+    # invalid code points at the PDF boundary so metadata, outline titles, and
+    # selectable text remain safe to render and persist as UTF-8.
+    cleaned = _INVALID_TEXT_RE.sub(" ", value or "")
+    cleaned = _SPACE_RE.sub(" ", cleaned).strip()
+    return _SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", cleaned)
 
 
 class PdfBook:

@@ -15,8 +15,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
-    QFontComboBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -24,18 +22,24 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .dialog_layout import ScreenFittingDialog
+from .dialog_layout import (
+    ScreenFittingDialog,
+    WheelSafeDoubleSpinBox,
+    WheelSafeFontComboBox,
+    WheelSafeSpinBox,
+)
 
 
 WORD_RE = re.compile(r"\S+", re.UNICODE)
 SENTENCE_END_RE = re.compile(r"[.!?…]+[\"'”’»)\]}]*$", re.UNICODE)
 CLAUSE_END_RE = re.compile(r"[,;:][\"'”’»)\]}]*$", re.UNICODE)
+MIN_COUNTDOWN_SECONDS = 3
+MAX_COUNTDOWN_SECONDS = 10
 
 
 @dataclass(slots=True)
@@ -103,7 +107,9 @@ class SpeedReaderSettings:
             clause_pause_factor=decimal("clause_pause_factor", 1.0, 3.0),
             sentence_pause_factor=decimal("sentence_pause_factor", 1.0, 4.0),
             long_word_extra_ms=integer("long_word_extra_ms", 0, 60),
-            countdown_seconds=integer("countdown_seconds", 0, 10),
+            countdown_seconds=integer(
+                "countdown_seconds", MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS
+            ),
             rest_interval_minutes=integer("rest_interval_minutes", 0, 60),
             fullscreen=flag("fullscreen"),
             minimal_chrome=flag("minimal_chrome"),
@@ -450,7 +456,12 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         self.punctuation.setChecked(settings.punctuation_pauses)
         self.clause_factor = self._decimal(settings.clause_pause_factor, 1.0, 3.0)
         self.sentence_factor = self._decimal(settings.sentence_pause_factor, 1.0, 4.0)
-        self.countdown = self._spin(settings.countdown_seconds, 0, 10, " seconds")
+        self.countdown = self._spin(
+            settings.countdown_seconds,
+            MIN_COUNTDOWN_SECONDS,
+            MAX_COUNTDOWN_SECONDS,
+            " seconds",
+        )
         self.rest_interval = self._spin(settings.rest_interval_minutes, 0, 60, " minutes (0 = off)")
         pace_form.addRow("Nominal speed", self.wpm)
         pace_form.addRow("Words per fixation", self.chunk_size)
@@ -467,7 +478,7 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         appearance_form = QFormLayout(appearance_page)
         appearance_form.setContentsMargins(18, 18, 18, 18)
         appearance_form.setSpacing(12)
-        self.font_family = QFontComboBox()
+        self.font_family = WheelSafeFontComboBox()
         self.font_family.setCurrentFont(QFont(settings.font_family))
         self.font_size = self._spin(settings.font_size, 28, 144, " pt")
         self.background_color = ColorButton(settings.background_color, "Choose background color")
@@ -529,8 +540,8 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         self.setStyleSheet(self._style())
 
     @staticmethod
-    def _spin(value: int, low: int, high: int, suffix: str = "") -> QSpinBox:
-        control = QSpinBox()
+    def _spin(value: int, low: int, high: int, suffix: str = "") -> WheelSafeSpinBox:
+        control = WheelSafeSpinBox()
         control.setRange(low, high)
         control.setValue(value)
         control.setSuffix(suffix)
@@ -538,8 +549,8 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         return control
 
     @staticmethod
-    def _decimal(value: float, low: float, high: float) -> QDoubleSpinBox:
-        control = QDoubleSpinBox()
+    def _decimal(value: float, low: float, high: float) -> WheelSafeDoubleSpinBox:
+        control = WheelSafeDoubleSpinBox()
         control.setRange(low, high)
         control.setSingleStep(0.05)
         control.setDecimals(2)
@@ -614,12 +625,18 @@ class SpeedReaderDialog(ScreenFittingDialog):
     ):
         super().__init__(parent)
         self.document = document
-        self.settings = settings
+        self.settings = replace(
+            settings,
+            countdown_seconds=min(
+                max(settings.countdown_seconds, MIN_COUNTDOWN_SECONDS),
+                MAX_COUNTDOWN_SECONDS,
+            ),
+        )
         self.cursor = SpeedReadingCursor(document, start_chapter, start_scroll)
         self.current_unit: SpeedUnit | None = None
         self.playing = False
         self.stage = "idle"
-        self.countdown_remaining = settings.countdown_seconds
+        self.countdown_remaining = self.settings.countdown_seconds
         self.next_break_at = 0.0
         self.in_rest_break = False
         self._resume_after_seek = False
@@ -657,7 +674,7 @@ class SpeedReaderDialog(ScreenFittingDialog):
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.message.setWordWrap(True)
         root.addWidget(self.message)
-        self.display = SpeedWordDisplay(settings)
+        self.display = SpeedWordDisplay(self.settings)
         self.display.clicked.connect(self.toggle_playback)
         root.addWidget(self.display, 2)
         root.addStretch(1)
@@ -701,18 +718,26 @@ class SpeedReaderDialog(ScreenFittingDialog):
         if not self.document.total_words:
             self._complete("This book has no extractable text for speed reading.")
             return
-        if self.settings.countdown_seconds:
-            self.stage = "countdown"
-            self.message.setText(f"{self.countdown_remaining}\n\nSpace pauses · ← rewinds · ↑/↓ changes WPM · Esc closes")
-            self.display.set_text("")
-            self.timer.start(1000)
-        else:
-            self._begin_playback()
+        self.playing = False
+        self.stage = "countdown"
+        self.countdown_remaining = self.settings.countdown_seconds
+        self.play_button.setEnabled(False)
+        self.play_button.setText("Starting…")
+        self._show_countdown_step()
+
+    def _show_countdown_step(self) -> None:
+        self.message.setText(
+            "Welcome to Lumen Speed Reading\n\n"
+            "Relax your gaze and keep your eyes on the focus point."
+        )
+        self.display.set_text(str(self.countdown_remaining))
+        self.timer.start(1000)
 
     def _begin_playback(self) -> None:
         self.playing = True
         self.in_rest_break = False
         self.message.clear()
+        self.play_button.setEnabled(True)
         self.play_button.setText("❚❚  Pause")
         if self.settings.rest_interval_minutes:
             self.next_break_at = time.monotonic() + self.settings.rest_interval_minutes * 60
@@ -741,8 +766,7 @@ class SpeedReaderDialog(ScreenFittingDialog):
         if self.stage == "countdown":
             self.countdown_remaining -= 1
             if self.countdown_remaining > 0:
-                self.message.setText(str(self.countdown_remaining))
-                self.timer.start(1000)
+                self._show_countdown_step()
             else:
                 self._begin_playback()
             return
@@ -759,9 +783,8 @@ class SpeedReaderDialog(ScreenFittingDialog):
 
     def toggle_playback(self) -> None:
         if self.stage == "countdown":
-            self.timer.stop()
-            self.countdown_remaining = 0
-            self._begin_playback()
+            # The gentle transition is intentional: clicks or a stray Space
+            # must not make the first word flash up before the reader is ready.
             return
         if self.playing:
             self.pause()
@@ -811,6 +834,7 @@ class SpeedReaderDialog(ScreenFittingDialog):
         self.stage = "complete"
         self.display.set_text("")
         self.message.setText(message)
+        self.play_button.setEnabled(True)
         self.play_button.setText("▶  Play")
         self.header.show()
         self.footer.show()

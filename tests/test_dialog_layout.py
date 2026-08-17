@@ -4,15 +4,37 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QScrollArea
 
-from lumen_reader.dialog_layout import ScreenFittingDialog, fitted_rect
+from lumen_reader.dialog_layout import (
+    ScreenFittingDialog,
+    WheelSafeComboBox,
+    WheelSafeDoubleSpinBox,
+    WheelSafeFontComboBox,
+    WheelSafeSpinBox,
+    fitted_rect,
+)
 from lumen_reader.speed_reader import SpeedReaderSettings, SpeedReaderSettingsDialog
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _send_wheel(widget: object, delta: int = -120) -> None:
+    event = QWheelEvent(
+        QPointF(5, 5),
+        QPointF(5, 5),
+        QPoint(),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+    QApplication.sendEvent(widget, event)  # type: ignore[arg-type]
 
 
 def test_fitted_rect_shrinks_and_centers_inside_usable_screen() -> None:
@@ -70,3 +92,37 @@ def test_short_screen_keeps_speed_settings_actions_reachable() -> None:
     assert button_bottom <= dialog.contentsRect().bottom()
     assert scroll.verticalScrollBar().maximum() > 0
     dialog.close()
+
+
+def test_settings_fields_ignore_wheel_changes_and_keep_dialog_scrolling() -> None:
+    app = _application()
+    dialog = SpeedReaderSettingsDialog(SpeedReaderSettings())
+    dialog.resize(690, 500)
+    dialog.show()
+    app.processEvents()
+
+    assert isinstance(dialog.wpm, WheelSafeSpinBox)
+    assert isinstance(dialog.clause_factor, WheelSafeDoubleSpinBox)
+    assert isinstance(dialog.font_family, WheelSafeFontComboBox)
+    scroll = dialog.findChild(QScrollArea, "speedSettingsScroll")
+    bar = scroll.verticalScrollBar()
+    bar.setValue(0)
+    original_wpm = dialog.wpm.value()
+
+    _send_wheel(dialog.wpm)
+    app.processEvents()
+
+    assert dialog.wpm.value() == original_wpm
+    assert bar.value() > 0
+    dialog.close()
+
+
+def test_closed_combo_box_ignores_wheel_value_changes() -> None:
+    _application()
+    combo = WheelSafeComboBox()
+    combo.addItems(["Night", "Paper", "Sepia"])
+    combo.setCurrentIndex(1)
+
+    _send_wheel(combo, 120)
+
+    assert combo.currentText() == "Paper"

@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -52,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from .book import EpubBook, EpubError
-from .dialog_layout import ScreenFittingDialog
+from .dialog_layout import ScreenFittingDialog, WheelSafeComboBox
 from .dictionary import (
     DictionaryCache,
     DictionaryEntry,
@@ -1126,7 +1125,7 @@ class DefinitionSettingsDialog(ScreenFittingDialog):
         self.ollama_url.setPlaceholderText(DEFAULT_OLLAMA_URL)
         form.addRow("Ollama host", self.ollama_url)
         model_row = QHBoxLayout()
-        self.ollama_model = QComboBox()
+        self.ollama_model = WheelSafeComboBox()
         self.ollama_model.setEditable(True)
         self.ollama_model.addItem(str(self._values["ollama_model"] or DEFAULT_OLLAMA_MODEL))
         if self.ollama_model.itemText(0) != DEFAULT_OLLAMA_MODEL:
@@ -1426,7 +1425,7 @@ class ReaderWindow(QMainWindow):
         self.larger_button.clicked.connect(lambda: self._change_font_size(1))
         header_layout.addWidget(self.larger_button)
 
-        self.theme_combo = QComboBox()
+        self.theme_combo = WheelSafeComboBox()
         self.theme_combo.addItems(THEME_NAMES)
         current_theme = str(self.store.data.get("theme", "dark"))
         self.theme_combo.setCurrentText(THEME_LABELS.get(current_theme, "Night"))

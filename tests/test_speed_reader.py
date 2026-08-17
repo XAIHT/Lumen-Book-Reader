@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication
+
 from lumen_reader.speed_reader import (
     SpeedChapter,
+    SpeedReaderDialog,
     SpeedReaderSettings,
     SpeedReadingCursor,
     SpeedReadingDocument,
@@ -20,6 +27,10 @@ def _document() -> SpeedReadingDocument:
             SpeedChapter("Two", tokenize_text("Zeta eta theta.")),
         ]
     )
+
+
+def _application() -> QApplication:
+    return QApplication.instance() or QApplication([])
 
 
 def test_cursor_chunks_do_not_cross_sentences_or_chapters() -> None:
@@ -83,6 +94,43 @@ def test_settings_round_trip_clamps_unsafe_or_invalid_values() -> None:
     assert settings.text_color == SpeedReaderSettings().text_color
     assert settings.fullscreen is False
     assert SpeedReaderSettings.from_mapping(settings.to_dict()) == settings
+    assert SpeedReaderSettings.from_mapping({"countdown_seconds": 0}).countdown_seconds == 3
+
+
+def test_speed_reader_welcomes_then_counts_down_before_first_word() -> None:
+    app = _application()
+    player = SpeedReaderDialog(
+        document=_document(),
+        settings=SpeedReaderSettings(countdown_seconds=0),
+        book_title="Test Book",
+        start_chapter=0,
+        start_scroll=0.0,
+    )
+
+    player.start_session()
+    assert player.stage == "countdown"
+    assert player.playing is False
+    assert "Welcome to Lumen Speed Reading" in player.message.text()
+    assert player.display.text == "3"
+    assert not player.play_button.isEnabled()
+
+    player.toggle_playback()
+    assert player.stage == "countdown"
+    assert player.display.text == "3"
+
+    player._timer_fired()
+    assert player.display.text == "2"
+    player._timer_fired()
+    assert player.display.text == "1"
+    player._timer_fired()
+    assert player.stage == "visible"
+    assert player.playing is True
+    assert player.display.text == "Alpha"
+    assert player.play_button.isEnabled()
+
+    player.timer.stop()
+    player.close()
+    app.processEvents()
 
 
 def test_focus_position_and_default_contrast_are_readable() -> None:
