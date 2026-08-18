@@ -12,6 +12,7 @@ from typing import Any
 
 
 MARKS_FILENAME = "lumen-reading-marks.json"
+BOOK_SUFFIXES = {".epub", ".pdf"}
 
 
 def _now() -> str:
@@ -144,6 +145,42 @@ class MarksStore:
             except (TypeError, ValueError):
                 continue
         self.marks = parsed
+        if self._relink_missing_book_paths():
+            self.save()
+
+    def _relink_missing_book_paths(self) -> int:
+        """Repair marks after their complete library folder has been moved.
+
+        A missing absolute path is changed only when the marks file's current
+        folder contains exactly one EPUB or PDF with the same filename. This
+        keeps relocation automatic without guessing between ambiguous books.
+        """
+        try:
+            candidates = [
+                path.resolve()
+                for path in self.path.parent.iterdir()
+                if path.is_file() and path.suffix.casefold() in BOOK_SUFFIXES
+            ]
+        except OSError:
+            return 0
+
+        by_name: dict[str, list[Path]] = {}
+        for candidate in candidates:
+            by_name.setdefault(candidate.name.casefold(), []).append(candidate)
+
+        changed = 0
+        for mark in self.marks:
+            try:
+                if Path(mark.book_path).expanduser().is_file():
+                    continue
+            except OSError:
+                pass
+            matches = by_name.get(Path(mark.book_path).name.casefold(), [])
+            if len(matches) != 1:
+                continue
+            mark.book_path = str(matches[0])
+            changed += 1
+        return changed
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,4 +235,3 @@ class MarksStore:
             and abs(mark.scroll_percent - scroll_percent) < 0.005
             for mark in self.for_book(book_path)
         )
-

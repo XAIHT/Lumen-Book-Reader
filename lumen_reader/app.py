@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     store = ReaderStore(data_dir / "reader-state.json")
     marks_store = MarksStore(Path.cwd() / MARKS_FILENAME)
     local_books = library_books(Path.cwd())
+    store.relink_missing_books(Path.cwd())
     window = ReaderWindow(store, local_books, marks_store)
     if icon_path.is_file():
         window.setWindowIcon(QIcon(str(icon_path)))

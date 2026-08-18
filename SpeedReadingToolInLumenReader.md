@@ -48,7 +48,7 @@ Settings are saved in Lumen’s existing reader preferences and restored next ti
 
 ### During playback
 
-- **Space**: pause/resume; during the countdown it starts immediately.
+- **Space**: pause/resume once playback begins. During the welcome countdown it is intentionally ignored so a stray key cannot flash the first word early.
 - **Left / Right**: move approximately ten seconds backward/forward at the current WPM.
 - **Up / Down**: change speed by 25 WPM.
 - **Progress slider**: seek anywhere in the complete book.
@@ -68,7 +68,7 @@ When the session closes, Lumen reopens the corresponding EPUB section or PDF pag
 | Punctuation rhythm | On by default | Enables clause and sentence timing multipliers. |
 | Clause pause | 1.00–3.00×; **1.35×** | Slows units ending in comma, colon, or semicolon. |
 | Sentence pause | 1.00–4.00×; **1.85×** | Slows units ending in `.`, `?`, `!`, or ellipsis. |
-| Countdown | 0–10 s; **3 s** | Gives the eyes time to acquire the fixation location. |
+| Countdown | 3–10 s; **3 s** | Gives the eyes time to acquire the fixation location; the transition cannot be skipped accidentally. |
 | Eye-rest reminder | 0–60 min; **10 min** | Pauses and asks the reader to look away and blink; 0 disables it. |
 | Typeface | Installed system fonts | Lets the user choose a familiar, legible face. |
 | Word size | 28–144 pt; **68 pt** | Large central text; unusually long chunks automatically shrink to fit. |
@@ -154,14 +154,14 @@ Stop immediately for eye pain, persistent afterimages, headache, dizziness, naus
 - `tests/test_speed_reader.py`
   - cursor/chapter boundary, seek, timing, validation, ORP, and contrast tests.
 
-## Validation completed
+## Validation
 
-- Complete automated suite: **57 tests passing**.
-- New speed-reader unit suite: **5 tests passing**.
+- Run the complete automated suite with `python -m pytest`.
+- The speed-reader suite covers cursor boundaries, seeking, adaptive timing, settings validation, the non-skippable welcome countdown, ORP placement, and contrast.
 - Offscreen Qt rendering verified for the settings studio, RSVP player, and reader header.
 - Both the normal and minimal-chrome playback states were exercised.
 - Real EPUB-spine and PDF-text-layer adapters both build complete speed-reading documents in the test suite.
-- Existing EPUB/PDF parsing, search, marks, dictionary, storage, and safety tests remain green.
+- The full regression suite also covers EPUB/PDF parsing, search, marks, dictionary behavior, storage, and safety.
 
 ## Sensible future extensions
 

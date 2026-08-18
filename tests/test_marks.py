@@ -52,3 +52,21 @@ def test_marks_are_searchable_editable_and_removable(tmp_path: Path) -> None:
     assert store.remove(mark.id)
     assert not store.search()
 
+
+def test_marks_relink_automatically_after_library_folder_moves(tmp_path: Path) -> None:
+    old_library = tmp_path / "old-library"
+    new_library = tmp_path / "new-library"
+    old_library.mkdir()
+    new_library.mkdir()
+    old_book = old_library / "portable-book.epub"
+    old_book.touch()
+    marks_path = new_library / MARKS_FILENAME
+    store = MarksStore(marks_path)
+    mark = store.add(_mark(old_book))
+
+    new_book = old_book.replace(new_library / old_book.name)
+    relocated = MarksStore(marks_path)
+
+    assert relocated.get(mark.id).book_path == str(new_book.resolve())
+    persisted = json.loads(marks_path.read_text(encoding="utf-8"))
+    assert persisted["marks"][0]["book_path"] == str(new_book.resolve())

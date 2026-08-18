@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from lumen_reader.book import EpubBook, EpubError
-from lumen_reader.storage import ReaderStore
+from lumen_reader.storage import ReaderStore, _book_state_key
 
 
 def test_rejects_zip_path_traversal(tmp_path: Path) -> None:
@@ -45,3 +45,30 @@ def test_store_recovers_from_invalid_json(tmp_path: Path) -> None:
     assert store.data["theme"] == "dark"
     assert store.data["recent_books"] == []
 
+
+def test_store_relinks_recent_book_and_progress_after_library_move(tmp_path: Path) -> None:
+    old_library = tmp_path / "old-library"
+    new_library = tmp_path / "new-library"
+    old_library.mkdir()
+    new_library.mkdir()
+    old_book = old_library / "portable-book.pdf"
+    old_book.write_bytes(b"portable fixture")
+    stat = old_book.stat()
+    old_path = str(old_book.resolve())
+    old_key = _book_state_key(old_path, stat.st_size, stat.st_mtime_ns)
+
+    store = ReaderStore(tmp_path / "reader-state.json")
+    store.remember_book(old_path, "Portable Book", "Ada Reader")
+    store.data["books"][old_key] = {"chapter": 7, "scroll": 0.42, "bookmarks": []}
+    store.save()
+
+    new_book = old_book.replace(new_library / old_book.name)
+    assert store.relink_missing_books(new_library) == 1
+    new_stat = new_book.stat()
+    new_path = str(new_book.resolve())
+    new_key = _book_state_key(new_path, new_stat.st_size, new_stat.st_mtime_ns)
+
+    loaded = ReaderStore(store.path)
+    assert loaded.data["recent_books"][0]["path"] == new_path
+    assert loaded.data["books"][new_key]["chapter"] == 7
+    assert loaded.data["books"][new_key]["scroll"] == 0.42
