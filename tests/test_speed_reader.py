@@ -59,6 +59,14 @@ def test_cursor_starts_from_section_scroll_and_seeks_globally() -> None:
     assert cursor.chapter_index == 0
     assert cursor.consume(1).text == "epsilon"
 
+    exact = SpeedReadingCursor(
+        document,
+        chapter_index=0,
+        chapter_scroll=0.95,
+        word_index=1,
+    )
+    assert exact.consume(1).text == "beta."
+
 
 def test_adaptive_timing_respects_punctuation_length_and_blank_interval() -> None:
     document = SpeedReadingDocument(
@@ -126,6 +134,7 @@ def test_speed_reader_welcomes_then_counts_down_before_first_word() -> None:
     assert player.stage == "visible"
     assert player.playing is True
     assert player.display.text == "Alpha"
+    assert player.last_presented_position() == (0, 0, 1)
     assert player.play_button.isEnabled()
 
     player.timer.stop()

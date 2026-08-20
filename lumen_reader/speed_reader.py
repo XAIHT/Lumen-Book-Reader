@@ -185,11 +185,15 @@ class SpeedReadingCursor:
         document: SpeedReadingDocument,
         chapter_index: int = 0,
         chapter_scroll: float = 0.0,
+        word_index: int | None = None,
     ):
         self.document = document
         self.chapter_index = min(max(chapter_index, 0), max(len(document.chapters) - 1, 0))
         words = document.chapters[self.chapter_index].words if document.chapters else []
-        self.word_index = min(max(round(len(words) * chapter_scroll), 0), len(words))
+        requested_index = (
+            round(len(words) * chapter_scroll) if word_index is None else int(word_index)
+        )
+        self.word_index = min(max(requested_index, 0), len(words))
         self._skip_empty_forward()
 
     @property
@@ -428,8 +432,8 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         heading = QLabel("⚡  Speed Reader Studio")
         heading.setObjectName("speedSettingsHeading")
         intro = QLabel(
-            "Tune a fixed-focus RSVP stream for this session. Start conservatively, pause whenever "
-            "meaning becomes unclear, and use normal page reading for close analysis."
+            "Tune the RSVP stream, then point at the exact word where reading should begin. "
+            "Lumen will highlight the word under your cursor before you launch."
         )
         intro.setWordWrap(True)
         intro.setObjectName("speedSettingsIntro")
@@ -517,7 +521,7 @@ class SpeedReaderSettingsDialog(ScreenFittingDialog):
         root.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Start speed reading")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Choose starting word")
         buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("speedStartButton")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -621,6 +625,7 @@ class SpeedReaderDialog(ScreenFittingDialog):
         book_title: str,
         start_chapter: int,
         start_scroll: float,
+        start_word_index: int | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -632,7 +637,12 @@ class SpeedReaderDialog(ScreenFittingDialog):
                 MAX_COUNTDOWN_SECONDS,
             ),
         )
-        self.cursor = SpeedReadingCursor(document, start_chapter, start_scroll)
+        self.cursor = SpeedReadingCursor(
+            document,
+            start_chapter,
+            start_scroll,
+            word_index=start_word_index,
+        )
         self.current_unit: SpeedUnit | None = None
         self.playing = False
         self.stage = "idle"
@@ -905,6 +915,16 @@ class SpeedReaderDialog(ScreenFittingDialog):
                 self.cursor.chapter_scroll(self.current_unit.chapter_index, self.current_unit.word_index),
             )
         return self.cursor.chapter_index, self.cursor.chapter_scroll()
+
+    def last_presented_position(self) -> tuple[int, int, int] | None:
+        """Return the exact final chunk the reader actually saw."""
+        if self.current_unit is None:
+            return None
+        return (
+            self.current_unit.chapter_index,
+            self.current_unit.word_index,
+            self.current_unit.word_count,
+        )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space:

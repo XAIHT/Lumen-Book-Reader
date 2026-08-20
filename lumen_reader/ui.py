@@ -306,6 +306,329 @@ SELECTION_CONTEXT_SCRIPT = r"""
 """
 
 
+# Installed only while the reader is choosing an RSVP starting word.  The
+# overlays are separate from the book DOM, so targeting never edits the EPUB or
+# changes the text sequence used by SpeedReadingDocument.
+RSVP_TARGETING_SCRIPT = r"""
+(() => {
+  if (window.__lumenRsvpTargetStop) window.__lumenRsvpTargetStop();
+
+  const ROOT_CLASS = 'lumen-rsvp-targeting';
+  const TOKEN_RE = /\S+/gu;
+  let candidate = null;
+  let picked = null;
+
+  const hud = document.createElement('div');
+  hud.id = 'lumen-rsvp-target-hud';
+  hud.innerHTML = `
+    <span class="lumen-rsvp-target-icon">⌖</span>
+    <span><b>POINT TO THE FIRST WORD</b><small>Move precisely, then click to launch RSVP · Esc cancels</small></span>`;
+  const focus = document.createElement('div');
+  focus.id = 'lumen-rsvp-target-focus';
+  const tag = document.createElement('div');
+  tag.id = 'lumen-rsvp-target-tag';
+  tag.textContent = 'START HERE';
+  document.documentElement.append(hud, focus, tag);
+
+  const style = document.createElement('style');
+  style.id = 'lumen-rsvp-target-style';
+  style.textContent = `
+    html.${ROOT_CLASS}, html.${ROOT_CLASS} body { cursor: crosshair !important; }
+    html.${ROOT_CLASS} body * { cursor: crosshair !important; }
+    #lumen-rsvp-target-hud {
+      position: fixed; z-index: 2147483647; top: 18px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 12px; min-width: 390px; padding: 11px 18px 12px;
+      color: #f4fff9; background: rgba(7, 14, 18, .94); border: 1px solid rgba(118,255,178,.72);
+      border-radius: 16px; box-shadow: 0 18px 55px rgba(0,0,0,.38), 0 0 30px rgba(118,255,178,.12);
+      backdrop-filter: blur(14px); pointer-events: none; font: 700 12px/1.2 'Segoe UI', sans-serif;
+      letter-spacing: .09em;
+    }
+    #lumen-rsvp-target-hud small { display: block; margin-top: 4px; color: #a9b8b3; font-size: 11px;
+      font-weight: 500; letter-spacing: .01em; }
+    .lumen-rsvp-target-icon { display: grid; place-items: center; width: 35px; height: 35px;
+      color: #76ffb2; border: 1px solid rgba(118,255,178,.55); border-radius: 50%; font-size: 22px; }
+    #lumen-rsvp-target-focus { position: fixed; z-index: 2147483645; display: none; pointer-events: none;
+      border: 2px solid #76ffb2; border-radius: 5px; background: rgba(118,255,178,.20);
+      box-shadow: 0 0 0 3px rgba(7,14,18,.68), 0 0 22px rgba(118,255,178,.72);
+      transition: left 45ms linear, top 45ms linear, width 45ms linear, height 45ms linear; }
+    #lumen-rsvp-target-focus::before, #lumen-rsvp-target-focus::after { content: ''; position: absolute;
+      inset: -7px; border: 1px solid rgba(118,255,178,.42); border-left-color: transparent;
+      border-right-color: transparent; border-radius: 8px; }
+    #lumen-rsvp-target-focus::after { inset: -11px; opacity: .45; }
+    #lumen-rsvp-target-tag { position: fixed; z-index: 2147483646; display: none; pointer-events: none;
+      padding: 4px 8px; color: #07110d; background: #76ffb2; border-radius: 5px;
+      box-shadow: 0 7px 18px rgba(0,0,0,.3); font: 800 9px/1 'Segoe UI', sans-serif;
+      letter-spacing: .08em; white-space: nowrap; }
+  `;
+  document.head.appendChild(style);
+  document.documentElement.classList.add(ROOT_CLASS);
+
+  const allowedTextNode = (node) => {
+    const parent = node && node.parentElement;
+    return !!parent
+      && !parent.closest('script,style,noscript,.lumen-section-label,#lumen-rsvp-target-hud,#lumen-rsvp-target-tag')
+      && /\S/u.test(node.data || '');
+  };
+
+  const textNodes = () => {
+    const nodes = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => allowedTextNode(node)
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    return nodes;
+  };
+
+  const rectForRange = (range) => {
+    const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+    if (!rects.length) return null;
+    return rects.reduce((box, rect) => ({
+      left: Math.min(box.left, rect.left), top: Math.min(box.top, rect.top),
+      right: Math.max(box.right, rect.right), bottom: Math.max(box.bottom, rect.bottom)
+    }), {left: rects[0].left, top: rects[0].top, right: rects[0].right, bottom: rects[0].bottom});
+  };
+
+  const wordAt = (x, y) => {
+    const element = document.elementFromPoint(x, y);
+    const pdfWord = element && element.closest ? element.closest('.pdf-word') : null;
+    if (pdfWord) {
+      const words = [...document.querySelectorAll('.pdf-word')];
+      const index = words.indexOf(pdfWord);
+      const rect = pdfWord.getBoundingClientRect();
+      if (index < 0 || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
+      return {word: (pdfWord.textContent || '').trim(), wordIndex: index,
+        rect: {left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom}};
+    }
+
+    const caret = document.caretRangeFromPoint
+      ? document.caretRangeFromPoint(x, y)
+      : (() => {
+          const position = document.caretPositionFromPoint ? document.caretPositionFromPoint(x, y) : null;
+          if (!position) return null;
+          const range = document.createRange();
+          range.setStart(position.offsetNode, position.offset);
+          range.collapse(true);
+          return range;
+        })();
+    if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE) return null;
+    const node = caret.startContainer;
+    if (!allowedTextNode(node)) return null;
+    const nodes = textNodes();
+    const nodeIndex = nodes.indexOf(node);
+    if (nodeIndex < 0) return null;
+    let preceding = 0;
+    for (let i = 0; i < nodeIndex; i += 1) preceding += [...nodes[i].data.matchAll(TOKEN_RE)].length;
+    const matches = [...node.data.matchAll(TOKEN_RE)];
+    for (let i = 0; i < matches.length; i += 1) {
+      const match = matches[i];
+      const range = document.createRange();
+      range.setStart(node, match.index);
+      range.setEnd(node, match.index + match[0].length);
+      const rect = rectForRange(range);
+      if (!rect) continue;
+      if (x >= rect.left - 1 && x <= rect.right + 1 && y >= rect.top - 1 && y <= rect.bottom + 1) {
+        return {word: match[0], wordIndex: preceding + i, rect};
+      }
+    }
+    return null;
+  };
+
+  const paint = (next) => {
+    candidate = next;
+    if (!next) {
+      focus.style.display = 'none';
+      tag.style.display = 'none';
+      return;
+    }
+    const rect = next.rect;
+    focus.style.display = 'block';
+    focus.style.left = `${rect.left - 4}px`;
+    focus.style.top = `${rect.top - 3}px`;
+    focus.style.width = `${Math.max(7, rect.right - rect.left + 8)}px`;
+    focus.style.height = `${Math.max(7, rect.bottom - rect.top + 6)}px`;
+    tag.style.display = 'block';
+    tag.style.left = `${Math.max(8, Math.min(innerWidth - 82, rect.left - 3))}px`;
+    tag.style.top = `${Math.max(8, rect.top - 25)}px`;
+  };
+
+  const onMove = (event) => paint(wordAt(event.clientX, event.clientY));
+  const onDown = (event) => {
+    if (event.button !== 0) return;
+    const selected = wordAt(event.clientX, event.clientY);
+    if (selected) picked = {word: selected.word, wordIndex: selected.wordIndex};
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const suppress = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const onLeave = () => paint(null);
+  document.addEventListener('pointermove', onMove, true);
+  document.addEventListener('pointerdown', onDown, true);
+  document.addEventListener('click', suppress, true);
+  document.addEventListener('auxclick', suppress, true);
+  document.addEventListener('mouseleave', onLeave, true);
+
+  window.__lumenRsvpTargetTakePick = () => {
+    const result = picked;
+    picked = null;
+    return result;
+  };
+  window.__lumenRsvpTargetStop = () => {
+    document.removeEventListener('pointermove', onMove, true);
+    document.removeEventListener('pointerdown', onDown, true);
+    document.removeEventListener('click', suppress, true);
+    document.removeEventListener('auxclick', suppress, true);
+    document.removeEventListener('mouseleave', onLeave, true);
+    document.documentElement.classList.remove(ROOT_CLASS);
+    hud.remove(); focus.remove(); tag.remove(); style.remove();
+    delete window.__lumenRsvpTargetTakePick;
+    delete window.__lumenRsvpTargetStop;
+  };
+  return true;
+})()
+"""
+
+RSVP_TARGET_TAKE_PICK_SCRIPT = r"""
+(() => JSON.stringify(window.__lumenRsvpTargetTakePick
+  ? window.__lumenRsvpTargetTakePick()
+  : null))()
+"""
+
+RSVP_TARGET_STOP_SCRIPT = r"""
+(() => { if (window.__lumenRsvpTargetStop) window.__lumenRsvpTargetStop(); return true; })()
+"""
+
+
+RSVP_RETURN_HIGHLIGHT_SCRIPT = r"""
+((startIndex, requestedCount) => {
+  if (window.__lumenRsvpReturnHighlightStop) window.__lumenRsvpReturnHighlightStop();
+
+  const TOKEN_RE = /\S+/gu;
+  const count = Math.max(1, Number(requestedCount) || 1);
+  const root = document.createElement('div');
+  root.id = 'lumen-rsvp-return-highlight';
+  const tag = document.createElement('div');
+  tag.id = 'lumen-rsvp-return-tag';
+  tag.textContent = count > 1 ? 'LAST PHRASE READ' : 'LAST WORD READ';
+  const style = document.createElement('style');
+  style.id = 'lumen-rsvp-return-style';
+  style.textContent = `
+    #lumen-rsvp-return-highlight { position: fixed; inset: 0; z-index: 2147483644;
+      pointer-events: none; }
+    .lumen-rsvp-return-segment { position: fixed; border: 2px solid #ff4d64; border-radius: 5px;
+      background: rgba(255, 55, 82, .24); box-shadow: 0 0 0 3px rgba(22,5,9,.60),
+      0 0 25px rgba(255,55,82,.66); }
+    .lumen-rsvp-return-segment::after { content: ''; position: absolute; inset: -7px;
+      border: 1px solid rgba(255,77,100,.42); border-left-color: transparent;
+      border-right-color: transparent; border-radius: 8px; }
+    #lumen-rsvp-return-tag { position: fixed; z-index: 2147483645; pointer-events: none;
+      padding: 5px 9px; color: #fff5f6; background: #a9152d; border: 1px solid #ff7185;
+      border-radius: 6px; box-shadow: 0 8px 22px rgba(0,0,0,.38);
+      font: 800 9px/1 'Segoe UI', sans-serif; letter-spacing: .09em; white-space: nowrap; }
+  `;
+  document.head.appendChild(style);
+  document.documentElement.append(root, tag);
+
+  const allowedTextNode = (node) => {
+    const parent = node && node.parentElement;
+    return !!parent
+      && !parent.closest('script,style,noscript,.lumen-section-label,#lumen-rsvp-return-highlight,#lumen-rsvp-return-tag')
+      && /\S/u.test(node.data || '');
+  };
+  const ranges = [];
+  const pdfWords = [...document.querySelectorAll('.pdf-word')];
+  if (pdfWords.length) {
+    pdfWords.slice(startIndex, startIndex + count).forEach((word) => ranges.push(word));
+  } else {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => allowedTextNode(node)
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+    });
+    let index = 0;
+    while (walker.nextNode() && ranges.length < count) {
+      const node = walker.currentNode;
+      for (const match of node.data.matchAll(TOKEN_RE)) {
+        if (index >= startIndex && index < startIndex + count) {
+          const range = document.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          ranges.push(range);
+        }
+        index += 1;
+        if (index >= startIndex + count) break;
+      }
+    }
+  }
+
+  const stop = () => {
+    root.remove(); tag.remove(); style.remove();
+    delete window.__lumenRsvpReturnHighlightStop;
+  };
+  window.__lumenRsvpReturnHighlightStop = stop;
+  if (!ranges.length) {
+    stop();
+    return JSON.stringify({found: false});
+  }
+
+  const rawRects = () => ranges.flatMap((item) => {
+    const rects = item instanceof Element
+      ? [item.getBoundingClientRect()]
+      : [...item.getClientRects()];
+    return rects.filter((rect) => rect.width > 0 && rect.height > 0);
+  });
+  const initial = rawRects()[0];
+  if (initial) window.scrollBy(0, initial.top - innerHeight * .48);
+
+  const paint = () => {
+    const rects = rawRects();
+    if (!rects.length) return;
+    const lines = [];
+    rects.forEach((rect) => {
+      const prior = lines[lines.length - 1];
+      if (prior && Math.abs(prior.top - rect.top) < 4 && rect.left - prior.right < 14) {
+        prior.right = Math.max(prior.right, rect.right);
+        prior.bottom = Math.max(prior.bottom, rect.bottom);
+      } else {
+        lines.push({left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom});
+      }
+    });
+    root.replaceChildren();
+    lines.forEach((rect) => {
+      const segment = document.createElement('div');
+      segment.className = 'lumen-rsvp-return-segment';
+      segment.style.left = `${rect.left - 4}px`;
+      segment.style.top = `${rect.top - 3}px`;
+      segment.style.width = `${Math.max(7, rect.right - rect.left + 8)}px`;
+      segment.style.height = `${Math.max(7, rect.bottom - rect.top + 6)}px`;
+      root.appendChild(segment);
+    });
+    const first = lines[0];
+    tag.style.left = `${Math.max(8, Math.min(innerWidth - 118, first.left - 3))}px`;
+    tag.style.top = `${Math.max(8, first.top - 28)}px`;
+  };
+  requestAnimationFrame(() => requestAnimationFrame(paint));
+  return JSON.stringify({found: true, wordIndex: startIndex, wordCount: ranges.length});
+})(__LUMEN_START_INDEX__, __LUMEN_WORD_COUNT__)
+"""
+
+RSVP_RETURN_HIGHLIGHT_STOP_SCRIPT = r"""
+(() => {
+  if (window.__lumenRsvpReturnHighlightStop) window.__lumenRsvpReturnHighlightStop();
+  return true;
+})()
+"""
+
+
+def rsvp_return_highlight_script(word_index: int, word_count: int) -> str:
+    """Build the trusted script for one exact, non-persistent RSVP return marker."""
+    return RSVP_RETURN_HIGHLIGHT_SCRIPT.replace(
+        "__LUMEN_START_INDEX__", str(max(0, int(word_index)))
+    ).replace("__LUMEN_WORD_COUNT__", str(max(1, int(word_count))))
+
+
 def control_link_activation_allowed(modifiers: Qt.KeyboardModifier) -> bool:
     """Return whether a physical Ctrl modifier authorizes a link action."""
     return bool(modifiers & Qt.KeyboardModifier.ControlModifier)
@@ -1296,6 +1619,12 @@ class ReaderWindow(QMainWindow):
         self._selection_candidate_context = ""
         self._selection_candidate_anchor = QPoint()
         self._selection_capture_id = 0
+        self._speed_target_active = False
+        self._speed_target_document: SpeedReadingDocument | None = None
+        self._speed_target_settings: SpeedReaderSettings | None = None
+        self._speed_return_highlight_visible = False
+        self._pending_speed_return_highlight: tuple[int, int] | None = None
+        self._speed_return_highlight_request_id = 0
         self._last_external_link = ""
         self._last_external_link_at = 0.0
 
@@ -1712,6 +2041,8 @@ class ReaderWindow(QMainWindow):
             self.open_book(path)
 
     def open_book(self, path: str) -> None:
+        if self._speed_target_active:
+            self._cancel_speed_start_target()
         try:
             new_book = self._load_book(path)
             if new_book is None:
@@ -1801,6 +2132,9 @@ class ReaderWindow(QMainWindow):
         if isinstance(scroll, (int, float)):
             self.scroll_percent = max(0.0, min(float(scroll), 1.0))
         self.save_state()
+        if self._speed_target_active:
+            self._cancel_speed_start_target()
+        self._dismiss_speed_return_highlight()
         self._clear_selection_candidate()
         self._dismiss_definition()
         self.main_stack.setCurrentIndex(0)
@@ -1870,9 +2204,12 @@ class ReaderWindow(QMainWindow):
         scroll: float = 0.0,
         find_text: str = "",
         find_backward: bool = False,
+        rsvp_return_highlight: tuple[int, int] | None = None,
     ) -> None:
         if not self.book or not (0 <= index < len(self.book.chapters)):
             return
+        self._dismiss_speed_return_highlight()
+        self._pending_speed_return_highlight = rsvp_return_highlight
         self._clear_selection_candidate()
         self._dismiss_definition()
         if index != self.chapter_index:
@@ -1905,12 +2242,25 @@ class ReaderWindow(QMainWindow):
         # It prevents link focus/click side effects while preserving normal
         # text selection, including selections that begin on linked text.
         self.web.page().runJavaScript(READER_INTERACTION_GUARD_SCRIPT)
+        if self._speed_target_active:
+            self.web.page().runJavaScript(RSVP_TARGETING_SCRIPT)
         percent = self.pending_scroll
         script = (
             "(() => { const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);"
             f" window.scrollTo(0, max * {percent!r}); return max; }})()"
         )
         self.web.page().runJavaScript(script)
+        if self._pending_speed_return_highlight is not None:
+            word_index, word_count = self._pending_speed_return_highlight
+            self._pending_speed_return_highlight = None
+            self._speed_return_highlight_request_id += 1
+            request_id = self._speed_return_highlight_request_id
+            self.web.page().runJavaScript(
+                rsvp_return_highlight_script(word_index, word_count),
+                lambda payload, serial=request_id: self._speed_return_highlight_installed(
+                    payload, serial
+                ),
+            )
         if self.pending_find:
             find_text = json.dumps(self.pending_find)
             find_backward = "true" if self.pending_find_backward else "false"
@@ -1922,6 +2272,23 @@ class ReaderWindow(QMainWindow):
             )
         self.pending_find = ""
         self.pending_find_backward = False
+
+    def _speed_return_highlight_installed(self, payload: Any, request_id: int) -> None:
+        if request_id != self._speed_return_highlight_request_id:
+            return
+        try:
+            data = json.loads(payload) if isinstance(payload, str) else {}
+        except json.JSONDecodeError:
+            data = {}
+        self._speed_return_highlight_visible = bool(data.get("found"))
+
+    def _dismiss_speed_return_highlight(self) -> None:
+        """Remove the transient red marker without changing reading progress."""
+        self._speed_return_highlight_request_id += 1
+        self._pending_speed_return_highlight = None
+        if hasattr(self, "web"):
+            self.web.page().runJavaScript(RSVP_RETURN_HIGHLIGHT_STOP_SCRIPT)
+        self._speed_return_highlight_visible = False
 
     def next_chapter(self) -> None:
         if self.book and self.chapter_index + 1 < len(self.book.chapters):
@@ -1953,7 +2320,10 @@ class ReaderWindow(QMainWindow):
         self.reader_search_edit.selectAll()
 
     def show_speed_reader(self) -> None:
-        """Configure and launch a format-neutral RSVP session from the current place."""
+        """Configure RSVP, then let the reader point at its exact first word."""
+        if self._speed_target_active:
+            self._cancel_speed_start_target()
+            return
         if not self.book or self.main_stack.currentIndex() == 0:
             return
         settings = SpeedReaderSettings.from_mapping(self.store.data.get("speed_reader"))
@@ -1981,23 +2351,126 @@ class ReaderWindow(QMainWindow):
             )
             return
 
+        self._begin_speed_start_target(document, settings)
+
+    def _begin_speed_start_target(
+        self, document: SpeedReadingDocument, settings: SpeedReaderSettings
+    ) -> None:
+        """Turn the live book page into a precise, cursor-driven RSVP launcher."""
+        self._clear_selection_candidate()
+        self._dismiss_definition()
+        self._speed_target_document = document
+        self._speed_target_settings = settings
+        self._speed_target_active = True
+        self.speed_reader_button.setText("✕  Cancel")
+        self.speed_reader_button.setToolTip("Cancel choosing the RSVP starting word (Esc)")
+        self.speed_reader_button.setAccessibleName("Cancel RSVP starting-word selection")
+        self.web.page().runJavaScript(RSVP_TARGETING_SCRIPT)
+        self.web.setFocus()
+
+    def _cancel_speed_start_target(self) -> None:
+        """Leave targeting mode without changing the reader's place."""
+        if hasattr(self, "web"):
+            self.web.page().runJavaScript(RSVP_TARGET_STOP_SCRIPT)
+        self._speed_target_active = False
+        self._speed_target_document = None
+        self._speed_target_settings = None
+        self.speed_reader_button.setText("⚡  Speed")
+        self.speed_reader_button.setToolTip(
+            "Open the configurable rapid serial speed reader (Ctrl+Shift+R)"
+        )
+        self.speed_reader_button.setAccessibleName("Configure and start speed reading")
+
+    def _take_speed_target_pick(self) -> None:
+        if not self._speed_target_active:
+            return
+        self.web.page().runJavaScript(
+            RSVP_TARGET_TAKE_PICK_SCRIPT,
+            self._speed_target_pick_received,
+        )
+
+    def _speed_target_pick_received(self, payload: Any) -> None:
+        if not self._speed_target_active or not self.book:
+            return
+        try:
+            data = json.loads(payload) if isinstance(payload, str) else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            return
+        try:
+            word_index = int(data["wordIndex"])
+        except (KeyError, TypeError, ValueError):
+            return
+        document = self._speed_target_document
+        settings = self._speed_target_settings
+        if document is None or settings is None or not (0 <= self.chapter_index < len(document.chapters)):
+            self._cancel_speed_start_target()
+            return
+        words = document.chapters[self.chapter_index].words
+        if not (0 <= word_index < len(words)):
+            return
+
+        clicked_word = str(data.get("word") or "")
+        if clicked_word != words[word_index]:
+            # A malformed EPUB can contain display-only nodes.  Resolve only a
+            # unique nearby copy of the clicked token; never silently jump to a
+            # distant occurrence that the pointer did not identify.
+            low = max(0, word_index - 8)
+            high = min(len(words), word_index + 9)
+            nearby = [i for i in range(low, high) if words[i] == clicked_word]
+            if len(nearby) != 1:
+                return
+            word_index = nearby[0]
+
+        chapter_index = self.chapter_index
+        self._cancel_speed_start_target()
+        QTimer.singleShot(
+            0,
+            lambda doc=document, configured=settings, chapter=chapter_index, word=word_index: self._launch_speed_reader(
+                doc, configured, chapter, word
+            ),
+        )
+
+    def _launch_speed_reader(
+        self,
+        document: SpeedReadingDocument,
+        settings: SpeedReaderSettings,
+        chapter_index: int,
+        word_index: int,
+    ) -> None:
+        if not self.book:
+            return
+
         player = SpeedReaderDialog(
             document=document,
             settings=settings,
             book_title=self.book.metadata.title,
-            start_chapter=self.chapter_index,
-            start_scroll=self.scroll_percent,
+            start_chapter=chapter_index,
+            start_scroll=0.0,
+            start_word_index=word_index,
             parent=self,
         )
         QTimer.singleShot(0, player.start_session)
         if settings.fullscreen:
             player.showFullScreen()
         player.exec()
+        last_presented = player.last_presented_position()
         chapter_index, chapter_scroll = player.reading_position()
         # Retain live WPM adjustments made with the arrow keys for the next session.
         self.store.data["speed_reader"] = player.settings.to_dict()
         self.store.save()
-        self.show_chapter(chapter_index, chapter_scroll)
+        if last_presented is None:
+            self.show_chapter(chapter_index, chapter_scroll)
+            return
+        last_chapter, last_word, last_count = last_presented
+        words = document.chapters[last_chapter].words
+        exact_scroll = last_word / max(len(words), 1)
+        self.show_chapter(
+            last_chapter,
+            exact_scroll,
+            rsvp_return_highlight=(last_word, last_count),
+        )
 
     def _set_reader_search_options(
         self, scope: str | None = None, backward: bool | None = None
@@ -3003,6 +3476,41 @@ class ReaderWindow(QMainWindow):
             # backstop for malformed content and renderer edge cases.
             event.accept()
             return True
+        if (
+            self._speed_target_active
+            and event.type() in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            event.accept()
+            if event.type() == QEvent.Type.KeyPress:
+                self._cancel_speed_start_target()
+            return True
+        if self._speed_target_active and self._is_inside(watched, self.web):
+            if (
+                event.type() == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._selection_press_position = None
+                self._selection_dragged = False
+                QTimer.singleShot(25, self._take_speed_target_pick)
+            if event.type() in {
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonRelease,
+                QEvent.Type.MouseButtonDblClick,
+                QEvent.Type.MouseMove,
+            }:
+                return super().eventFilter(watched, event)
+        if self._speed_return_highlight_visible or self._pending_speed_return_highlight is not None:
+            if (
+                event.type() in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
+                and event.key() == Qt.Key.Key_Escape
+            ):
+                event.accept()
+                if event.type() == QEvent.Type.KeyPress:
+                    self._dismiss_speed_return_highlight()
+                return True
+            if event.type() in {QEvent.Type.MouseButtonPress, QEvent.Type.Wheel}:
+                self._dismiss_speed_return_highlight()
         if event.type() == QEvent.Type.MouseButtonPress:
             if (
                 event.button() == Qt.MouseButton.LeftButton
@@ -3106,6 +3614,8 @@ class ReaderWindow(QMainWindow):
                 break
 
     def closeEvent(self, event: Any) -> None:
+        if self._speed_target_active:
+            self._cancel_speed_start_target()
         self.save_state()
         self._cancel_dictionary_lookup()
         self._dictionary_executor.shutdown(wait=False, cancel_futures=True)

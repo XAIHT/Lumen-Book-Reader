@@ -412,9 +412,14 @@ td, th {{ border: 1px solid color-mix(in srgb, {muted}, transparent 55%); paddin
         if index not in self._search_cache:
             raw = self._disk_path(self.chapters[index].href).read_bytes()
             soup = BeautifulSoup(raw, "html.parser")
-            for tag in soup.find_all(["script", "style"]):
+            for tag in soup.find_all(_UNSAFE_TAGS | {"style"}):
                 tag.decompose()
-            self._search_cache[index] = _clean_text(soup.get_text(" "))
+            # RSVP indexes must describe the text the reader can actually point at.
+            # Head metadata (especially <title>) and removed form/script content are
+            # not rendered in the reading surface, so including them here shifts every
+            # cursor-picked word by an invisible number of tokens.
+            body = soup.body or soup
+            self._search_cache[index] = _clean_text(body.get_text(" "))
         return self._search_cache[index]
 
     def search(self, query: str, limit: int = 100) -> list[SearchResult]:
