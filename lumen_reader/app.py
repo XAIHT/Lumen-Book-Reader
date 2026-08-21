@@ -12,13 +12,14 @@ from PySide6.QtWidgets import QApplication
 from .marks import MARKS_FILENAME, MarksStore
 from .storage import ReaderStore
 from .ui import ReaderWindow, is_supported_book, library_books
+from .version import get_version
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv if argv is None else argv)
     QApplication.setOrganizationName("Lumen Reader")
     QApplication.setApplicationName("Lumen")
-    QApplication.setApplicationVersion("1.1.0")
+    QApplication.setApplicationVersion(get_version())
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QApplication(arguments)
     app.setStyle("Fusion")

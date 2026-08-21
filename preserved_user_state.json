@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "ONE list, three readers: install.py skips these when extracting over an",
+    "existing installation, uninstall.py keeps them when removing files, and",
+    "tests/test_release_scheme.py fails if the two ever stop agreeing.",
+    "Tlamatini learned this the hard way - the updater had a preserve list and",
+    "the installer had none, so every reinstall wiped the user's settings.",
+    "Matching is on the TOP-LEVEL name inside the install directory, so an",
+    "entry like 'logs' protects 'logs/lumen-2026-08-20.log' too.",
+    "FAIL-SAFE: if this file is missing or unparseable, both programs fall back",
+    "to their built-in copy of the same list. Keeping a user's data by mistake",
+    "is recoverable; deleting it because a JSON file did not parse is not."
+  ],
+  "preserve_on_reinstall": [
+    "LumenInstall.json",
+    "Uninstaller.exe",
+    "Lumen Book Reader.lnk",
+    "logs",
+    "library"
+  ],
+  "keep_on_uninstall": [
+    "library"
+  ],
+  "appdata_dirs": [
+    "Lumen Reader"
+  ]
+}

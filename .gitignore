@@ -232,3 +232,24 @@ dist/
 # Private local reading state -- NEVER commit / never push.
 # Contains local file paths, personal notes, quotes and highlights.
 lumen-reading-marks.json
+
+# ── Lumen release pipeline artefacts (see RELEASING.md) ──────────────────────
+# Generated on every build from git tags; never hand-edited, never committed.
+lumen_reader/_version.py
+# Transient Win32 VERSIONINFO resources handed to PyInstaller --version-file.
+Lumen.version.txt
+Installer.version.txt
+Uninstaller.version.txt
+Installer.manifest
+# The build artefacts themselves. build/ and dist/ are already ignored above.
+pkg.zip
+Uninstaller.exe
+Installer.exe
+
+# ── Release-proof scratch (see tmp/release-proof/) ───────────────────────────
+# The visible round-trip harness writes its evidence here: full-desktop Shoter
+# screenshots, registry probes and phase logs, tens of MB per run and one run
+# per attempt. It is a record of a specific machine on a specific morning, not
+# a build input -- the assertions it exists to defend live in
+# tests/test_release_scheme.py, which is committed.
+tmp/

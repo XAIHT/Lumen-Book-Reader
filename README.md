@@ -155,6 +155,37 @@ python run_reader.py "C:\Books\My Book.epub"
 
 The launch directory becomes the visible shelf; recently opened books outside it are remembered too.
 
+### Windows installer
+
+Lumen ships as a per-user Windows release: a wizard, an uninstaller, and the
+package they install.
+
+~~~powershell
+& "C:/Program Files/Python312/python.exe" .\build_complete_release.py --bump minor
+~~~
+
+That single command freezes the app, builds both wizards, assembles
+`dist/Lumen_Release_v<version>/` and zips it with SHA-256 checksums and a
+release manifest. The user unpacks the zip and double-clicks **Installer.exe**.
+
+The wizard asks four things and nothing else: where Lumen goes, where the
+library lives, **which file types to register** — `.epub` and `.pdf` as separate
+tick-boxes, with *"make Lumen the default"* as a separate, unticked switch — and
+which shortcuts to create. Everything is written under `HKEY_CURRENT_USER`, so
+no administrator rights are needed and no other user of the machine is touched.
+Every key, shortcut and file it writes is removed by the uninstaller, and
+`tests/test_release_scheme.py` fails the build if that stops being true.
+
+Your books are never touched, and reading positions, bookmarks, notes and tags
+survive an uninstall unless you explicitly ask for them to go.
+
+Full details, including the exact registry surfaces and why each one is there:
+**[RELEASING.md](RELEASING.md)**.
+
+> **Before you distribute a binary:** PyMuPDF is offered under AGPL or a
+> commercial licence, and the release bundles it. Read
+> [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) first.
+
 ### Essential controls
 
 | Action | Keyboard |
