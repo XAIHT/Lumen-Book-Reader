@@ -25,6 +25,12 @@ Everything below explains what that command does and why each piece is there.
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
+| Stop at the release folder, no zip | `python build_complete_release.py --no-archive` |
+| Tag with a dirty working tree | `python build_complete_release.py --bump patch --allow-dirty` |
+| Drive the sub-builds with another interpreter | `python build_complete_release.py --python "C:/Program Files/Python312/python.exe"` |
+
+`--bump` and `--version` are mutually exclusive, and a version that is not
+valid SemVer is refused before any stage runs.
 
 `--bump` creates a **new annotated git tag** and builds it. Push it when
 you are happy:
@@ -257,7 +263,7 @@ rather than three minutes into an analysis pass.
 ## Verifying a release
 
 ```powershell
-cd Lumen_Release_v1.2.0
+cd Lumen_Release_v1.1.0
 Get-FileHash Installer.exe -Algorithm SHA256      # compare against SHA256SUMS.txt
 Get-Content RELEASE_MANIFEST.json | ConvertFrom-Json
 ```

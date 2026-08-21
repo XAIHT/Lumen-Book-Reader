@@ -32,7 +32,7 @@ Lumen gives books a calm native shell without flattening what makes them books. 
 
 | The experience | What Lumen actually does |
 |---|---|
-| ⚡ **RSVP speed reading** | Presents a book at one stable focus point, beginning from the exact place where you were reading. |
+| ⚡ **RSVP speed reading** | Presents a book at one stable focus point, starting on the exact word you point at and marking the exact word you stopped on. |
 | ◇ **Definitions in context** | Resolves words and phrases with offline, conventional online, inferred, and optional expert sources—without leaving the page. |
 | ✦ **Reading memory** | Restores position and keeps searchable notes, quotations, tags, and marks across the whole shelf. |
 | 📖 **EPUB + PDF fidelity** | Sanitized, themeable EPUB; high-resolution original-page PDF rendering with aligned selectable text. |
@@ -42,6 +42,14 @@ Lumen gives books a calm native shell without flattening what makes them books. 
 ![Lumen RSVP welcoming the reader before its three-second countdown](docs/rsvp-speed-reader.png)
 
 Lumen’s **Rapid Serial Visual Presentation (RSVP)** player turns the complete text of either an EPUB or PDF into a fixed-focus stream. Press **Ctrl+Shift+R**, tune the session in **Speed Reader Studio**, and Lumen returns you to the corresponding reading position when the session ends.
+
+### ⌖ Start and end markers — new in 1.1.0
+
+RSVP no longer guesses where you meant to begin, and no longer leaves you hunting for where you stopped.
+
+**Point to the first word.** The Studio's confirm button reads **Choose starting word**. Accept it and the live page itself becomes the launcher: a heads-up prompt reads *POINT TO THE FIRST WORD*, a reticle tracks the cursor, and a **START HERE** tag labels whichever word is under it. Click, and the stream begins on exactly that word — not on a fraction of a section estimated from your scroll position. It works on EPUB text and on the PDF selectable layer alike. While targeting is armed the **⚡ Speed** button becomes **✕ Cancel**; <kbd>Esc</kbd> or that button leaves without moving your place, and ordinary clicks are suppressed so nothing on the page can be triggered by accident.
+
+**See where you stopped.** When the session ends, Lumen reopens the page and draws a red marker around the exact final chunk you actually saw, tagged **LAST WORD READ** — or **LAST PHRASE READ** when the chunk size is greater than one. The marker is deliberately transient: <kbd>Esc</kbd>, a click, or a scroll dismisses it, and it is never written into the book or into your marks.
 
 - A welcoming, non-skippable **3 → 2 → 1** transition prepares the eyes before the first word.
 - **80–1200 WPM**, **1–5 words per fixation**, and live ±25 WPM adjustment.
@@ -195,6 +203,7 @@ Full details, including the exact registry surfaces and why each one is there:
 | Next / previous page or section | <kbd>Page Down</kbd> / <kbd>Page Up</kbd> |
 | Alternate next / previous | <kbd>Ctrl+→</kbd> / <kbd>Ctrl+←</kbd> |
 | Start RSVP | <kbd>Ctrl+Shift+R</kbd> |
+| Dismiss a definition card, cancel RSVP targeting, or clear the last-word marker | <kbd>Esc</kbd> |
 | Mark this position | <kbd>Ctrl+B</kbd> |
 | Search all notes and marks | <kbd>Ctrl+Shift+M</kbd> |
 | Return to the shelf | <kbd>Alt+←</kbd> |
@@ -214,7 +223,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, and RSVP timing/countdown behavior.
+Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, and the release scheme’s install/uninstall symmetry.
 
 ## License
 

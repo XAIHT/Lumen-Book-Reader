@@ -1,8 +1,12 @@
 # Speed Reading Tool in Lumen Reader
 
+*Lumen Book Reader 1.1.0 · created by Angela López Mendoza · @angelahack1*
+
 ## Executive summary
 
-Lumen now includes an optional, format-neutral **Speed Reader Studio**. Select **⚡ Speed** in the reader header (or press **Ctrl+Shift+R**) to configure and launch it. The button exists only while a book is open.
+Lumen includes an optional, format-neutral **Speed Reader Studio**. Select **⚡ Speed** in the reader header (or press **Ctrl+Shift+R**) to configure and launch it. The button exists only while a book is open.
+
+**1.1.0 adds explicit start and end markers.** A session no longer begins at an estimate derived from scroll position: the reader points the cursor at the precise word the stream should open on. When the session ends, Lumen marks the exact final chunk that was actually displayed, so the return to page reading is a known position rather than a search. Both markers are described under [User experience](#user-experience).
 
 The tool uses **rapid serial visual presentation (RSVP)**: a word or short phrase is placed at one stable fixation point, removed, and replaced by the next unit. It works with both EPUB and text-bearing PDF files because both Lumen book adapters already expose the same `text_for_chapter(index)` interface. An EPUB “chapter” is a spine section; a PDF “chapter” is a page.
 
@@ -39,12 +43,26 @@ The resulting position is pragmatic: RSVP is an optional pacing and focus mode. 
 ### Launch
 
 1. Open any EPUB or text-bearing PDF.
-2. Navigate to the place where speed reading should begin.
+2. Navigate to the page or section where speed reading should begin.
 3. Select **⚡ Speed** or press **Ctrl+Shift+R**.
 4. Configure the session in Speed Reader Studio.
-5. Select **Start speed reading**.
+5. Select **Choose starting word**.
+6. Point at the first word on the page and click.
 
-Settings are saved in Lumen’s existing reader preferences and restored next time. The speed reader starts at the current section/page and approximates the current vertical location as the same fraction of that section’s extracted words.
+Settings are saved in Lumen’s existing reader preferences and restored next time.
+
+### The start marker
+
+Confirming the Studio does not begin playback. It arms *targeting mode* on the live reading surface:
+
+- A fixed heads-up prompt reads **POINT TO THE FIRST WORD — Move precisely, then click to launch RSVP · Esc cancels**.
+- A reticle follows the cursor and a **START HERE** tag names the word currently under it, so the choice is confirmed before the click, not after.
+- Clicking begins the stream at exactly that word. Nothing is estimated from scroll geometry.
+- The **⚡ Speed** header button becomes **✕ Cancel** for the duration. <kbd>Esc</kbd> or that button leaves targeting without changing the reader's place, and clears the overlay completely.
+
+Targeting is format-neutral by construction. On a PDF page it resolves the word from the transparent `.pdf-word` selectable layer; on EPUB text it resolves a caret position from the pointer. In both cases it returns a word *index* into the same array the speed reader will play, so the pointer and the stream cannot disagree.
+
+Ordinary click, auxiliary-click, and navigation events are suppressed while targeting is armed, so choosing a starting word can never follow a link, open a definition, or start a selection. If a malformed EPUB puts display-only nodes in the flow and the clicked token does not match the word at the resolved index, Lumen looks for a *unique* copy of that token within eight words either side and uses it. If there is no unique nearby match, the click is ignored rather than resolved to a distant occurrence the reader did not point at.
 
 ### During playback
 
@@ -55,7 +73,17 @@ Settings are saved in Lumen’s existing reader preferences and restored next ti
 - **Esc** or **Close**: return to the normal reader.
 - **Click the word**: pause/resume.
 
-When the session closes, Lumen reopens the corresponding EPUB section or PDF page at the nearest proportional scroll position. Live WPM changes are retained for the next session.
+### The end marker
+
+When the session closes, Lumen reopens the EPUB section or PDF page that contains the **last chunk actually presented** — not the last chunk scheduled — and marks it:
+
+- A red outline is drawn around that exact word or phrase, on the real page, in place.
+- The marker is tagged **LAST WORD READ**, or **LAST PHRASE READ** when the chunk held more than one word.
+- A phrase that wraps across a line break is outlined as multiple segments rather than one box spanning the gutter.
+
+The marker is transient by design. <kbd>Esc</kbd>, any click, or any scroll dismisses it; it disappears on navigating away, returning to the shelf, or opening another book. It is never written into the book, into `lumen-reading-marks.json`, or into saved reader state — a reading position is a fact worth keeping, but a "you were here a moment ago" hint is not, and a permanent red box would become visual debris. If the word cannot be located on the rendered page, no marker is drawn and the page simply opens; the reading position is still restored.
+
+Live WPM changes are retained for the next session.
 
 ## Configuration reference
 
@@ -100,11 +128,13 @@ flowchart LR
     B --> C["text_for_chapter(index)"]
     C --> D["SpeedReadingDocument"]
     D --> E["Unicode whitespace tokenization"]
-    E --> F["Seekable cross-chapter cursor"]
+    E --> T["Cursor targeting · pointer to word index"]
+    T --> F["Seekable cross-chapter cursor"]
     F --> G["Sentence-safe chunking"]
     G --> H["Adaptive visible/blank scheduler"]
     H --> I["Fixed focal-point painter"]
-    I --> J["Return chapter/page + proportional word offset"]
+    I --> J["Return chapter/page at the last presented chunk"]
+    J --> K["Red end marker on the exact word or phrase"]
 ```
 
 The document stores per-section word arrays and global word offsets. The cursor can move locally, cross empty sections, seek globally, and map a global word index back to a section. The display is custom-painted: the prefix ends immediately before the screen center, the focal character occupies the center, and the suffix begins immediately after it. This is more stable than merely centering every word’s bounding box.
@@ -125,7 +155,7 @@ Each PDF page is a speed-reader section. PDFs with a text layer work directly. I
 
 - RSVP removes parafoveal preview and makes natural regression less immediate.
 - Reading speed cannot guarantee learning speed, inference quality, or long-term retention.
-- Proportional page handoff is approximate because HTML/PDF scroll geometry and extracted word position are different coordinate systems.
+- The *scroll* on handoff is still proportional, because HTML/PDF scroll geometry and extracted word position are different coordinate systems. The 1.1.0 end marker removes the consequence rather than the cause: the page may settle a line or two away from the mark, but the marker itself is drawn on the exact word, so the reader is never left estimating where the stream stopped.
 - Languages without whitespace-delimited words need a language-aware segmenter in a future version.
 - Equations, source-code indentation, poetry lineation, tables, charts, and image captions may need normal page reading.
 - The current mode is visual only; synchronized text-to-speech is a separate feature rather than an implicit part of RSVP.
@@ -146,18 +176,24 @@ Stop immediately for eye pain, persistent afterimages, headache, dizziness, naus
   - focal-point painter;
   - immersive player and controls.
 - `lumen_reader/ui.py`
-  - book-only **⚡ Speed** header entry;
+  - book-only **⚡ Speed** header entry, which doubles as **✕ Cancel** while targeting;
   - `Ctrl+Shift+R` shortcut;
+  - `RSVP_TARGETING_SCRIPT`, `RSVP_TARGET_TAKE_PICK_SCRIPT`, `RSVP_TARGET_STOP_SCRIPT` — the start-marker overlay, its pick handoff, and its teardown;
+  - `rsvp_return_highlight_script()` and `RSVP_RETURN_HIGHLIGHT_STOP_SCRIPT` — the end marker and its dismissal;
+  - the event filter that routes <kbd>Esc</kbd>, clicks, and wheel movement to whichever marker is live;
   - session launch, text extraction, persistence, and page handoff.
 - `lumen_reader/storage.py`
   - default speed-reader preference record.
 - `tests/test_speed_reader.py`
   - cursor/chapter boundary, seek, timing, validation, ORP, and contrast tests.
+- `tests/test_rsvp_targeting.py`
+  - drives both marker scripts inside a real Chromium page: asserts the pointer resolves the exact visible word index, that the picked token matches, that the end marker reports its segment count and correct `LAST WORD READ` / `LAST PHRASE READ` label, and that both overlays remove themselves completely on stop.
 
 ## Validation
 
 - Run the complete automated suite with `python -m pytest`.
 - The speed-reader suite covers cursor boundaries, seeking, adaptive timing, settings validation, the non-skippable welcome countdown, ORP placement, and contrast.
+- The start and end markers are exercised against a live Qt WebEngine page rather than mocked: real geometry, real hit-testing, real overlay teardown.
 - Offscreen Qt rendering verified for the settings studio, RSVP player, and reader header.
 - Both the normal and minimal-chrome playback states were exercised.
 - Real EPUB-spine and PDF-text-layer adapters both build complete speed-reading documents in the test suite.
