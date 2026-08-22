@@ -66,6 +66,8 @@ from .dictionary import (
 from .marks import MARKS_FILENAME, MarksStore, ReadingMark
 from .models import Bookmark, SearchResult, TocEntry
 from .pdf_book import PdfBook, PdfError, PdfPasswordRequired
+from .library_index import DEFAULT_TEXT_BUDGET, LibraryIndex, default_index_path, normalize_root
+from .shelf import LibraryShelf, IndexWorker
 from .storage import ReaderStore
 from .speed_reader import (
     SpeedReaderDialog,
@@ -1574,9 +1576,14 @@ class ReaderWindow(QMainWindow):
         store: ReaderStore,
         initial_books: list[Path] | None = None,
         marks_store: MarksStore | None = None,
+        library_root: str | Path | None = None,
+        library_index: LibraryIndex | None = None,
     ):
         super().__init__()
         self.store = store
+        self.library_root = normalize_root(library_root or Path.cwd())
+        self.library_index = library_index or LibraryIndex(default_index_path())
+        self._index_worker: IndexWorker | None = None
         self.marks_store = marks_store or MarksStore(Path.cwd() / MARKS_FILENAME)
         self.book: EpubBook | PdfBook | None = None
         self.chapter_index = 0
@@ -1799,19 +1806,19 @@ class ReaderWindow(QMainWindow):
         outer.addWidget(header)
 
         self.main_stack = QStackedWidget()
-        self.welcome = WelcomePage()
+        self.welcome = LibraryShelf(self.library_index, self.library_root)
         self.welcome.browse_requested.connect(self.browse_for_book)
         self.welcome.book_requested.connect(self.open_book)
-        self.welcome_scroll = QScrollArea()
-        self.welcome_scroll.setObjectName("welcomeScroll")
-        self.welcome_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.welcome_scroll.setWidgetResizable(True)
-        self.welcome_scroll.setWidget(self.welcome)
-        self.welcome_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        self.welcome.rescan_requested.connect(self.rescan_library)
+        # The shelf is added directly - never inside a QScrollArea.  A scroll
+        # area would stretch the list to its full content height, materialising
+        # every row and undoing the virtualization that makes a huge library
+        # instant.  The QListView does its own scrolling.
+        self.welcome.view.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         QScroller.grabGesture(
-            self.welcome_scroll.viewport(), QScroller.ScrollerGestureType.TouchGesture
+            self.welcome.view.viewport(), QScroller.ScrollerGestureType.TouchGesture
         )
-        self.main_stack.addWidget(self.welcome_scroll)
+        self.main_stack.addWidget(self.welcome)
 
         reader_shell = QWidget()
         reader_layout = QVBoxLayout(reader_shell)
@@ -2014,6 +2021,30 @@ class ReaderWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl++"), self, activated=lambda: self._change_font_size(1))
         QShortcut(QKeySequence("Ctrl+-"), self, activated=lambda: self._change_font_size(-1))
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._dismiss_definition)
+
+    def rescan_library(self, with_text: bool = True) -> None:
+        """Re-index the datalake on a worker thread, across every core."""
+        if self._index_worker is not None and self._index_worker.isRunning():
+            return
+        budget = int(self.store.data.get("text_budget", DEFAULT_TEXT_BUDGET))
+        worker = IndexWorker(self.library_index.path, self.library_root, budget, with_text)
+        worker.progressed.connect(self.welcome.show_progress)
+        worker.finished_scan.connect(lambda _counts: self.welcome.finish_progress())
+        worker.finished.connect(self._clear_index_worker)
+        self._index_worker = worker
+        worker.start()
+
+    def _clear_index_worker(self) -> None:
+        self._index_worker = None
+
+    def start_library_scan_if_needed(self) -> None:
+        """Index on first run, and whenever the shelf has nothing to show."""
+        try:
+            known = self.library_index.counts(self.library_root).total
+        except Exception:
+            known = 0
+        if known == 0:
+            self.rescan_library()
 
     def _populate_welcome(self, initial_books: list[Path]) -> None:
         recent = list(self.store.data.get("recent_books", []))
@@ -3587,7 +3618,7 @@ class ReaderWindow(QMainWindow):
             return super().eventFilter(watched, event)
 
         if self.main_stack.currentIndex() == 0:
-            bar = self.welcome_scroll.verticalScrollBar()
+            bar = self.welcome.view.verticalScrollBar()
             bar.setValue(round(bar.value() - delta_y))
         elif self._is_inside(watched, self.sidebar):
             views = (self.toc_tree, self.search_results, self.bookmark_list)
@@ -3643,6 +3674,7 @@ class ReaderWindow(QMainWindow):
             },
         }
         c = palettes.get(theme, palettes["dark"])
+        self.welcome.apply_palette(c)
         self.setStyleSheet(f"""
             QMainWindow, QDialog, #appShell {{ background: {c['bg']}; color: {c['fg']}; }}
             QWidget {{ font-family: 'Segoe UI'; font-size: 13px; }}

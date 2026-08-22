@@ -467,12 +467,21 @@ class LumenInstaller:
         self.install_path.trace_add("write", self._on_path_change)
 
         self._section_label(
-            inner, "YOUR LIBRARY FOLDER",
-            "Lumen opens here and keeps your reading marks beside your books.",
+            inner, "YOUR LIBRARY FOLDER  ·  THE WHOLE DATALAKE",
+            "Every EPUB and PDF in this folder AND its sub-folders becomes your\n"
+            "shelf. Lumen opens here and keeps your reading marks beside your books.",
         )
         self.library_entry, self.library_btn = self._path_row(
             inner, self.library_path, "Choose the folder that holds your books"
         )
+        self.library_count_label = tk.Label(
+            inner, text="", font=(FONT_FAMILY, 8, "bold"),
+            bg=BG_PANEL, fg=ACCENT, anchor="w",
+        )
+        self.library_count_label.pack(fill="x", pady=(0, 8))
+        self.library_path.trace_add("write", self._on_library_change)
+        self._library_count_token = 0
+        self._on_library_change()
         self._on_path_change()
 
     def _build_association_section(self, inner: tk.Frame) -> None:
@@ -600,6 +609,69 @@ class LumenInstaller:
         self.target_label.config(
             text=f"➜  {os.path.join(raw, FOLDER_NAME)}" if raw else ""
         )
+
+    def _on_library_change(self, *_args) -> None:
+        """Count the datalake in the background so the wizard never stalls.
+
+        A real library can hold tens of thousands of files across many folders,
+        so the walk runs on a worker thread and reports through a token: a stale
+        walk that finishes after the reader has already picked a different
+        folder is discarded instead of overwriting the newer count.
+        """
+        raw = self.library_path.get().strip()
+        self._library_count_token += 1
+        token = self._library_count_token
+        if not raw or not os.path.isdir(raw):
+            self.library_count_label.config(
+                text="" if not raw else "This folder does not exist yet.")
+            return
+        self.library_count_label.config(text="Counting your books…")
+        threading.Thread(
+            target=self._count_library, args=(raw, token), daemon=True
+        ).start()
+
+    def _count_library(self, root: str, token: int) -> None:
+        skip = {".git", "__pycache__", "node_modules", ".venv", "venv",
+                "$RECYCLE.BIN", "System Volume Information"}
+        epub = pdf = 0
+        total_bytes = 0
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name not in skip and not entry.name.startswith("$"):
+                            stack.append(entry.path)
+                        continue
+                    suffix = os.path.splitext(entry.name)[1].casefold()
+                    if suffix == ".epub":
+                        epub += 1
+                    elif suffix == ".pdf":
+                        pdf += 1
+                    else:
+                        continue
+                    total_bytes += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        if token != self._library_count_token:
+            return  # the reader moved on; this walk is stale
+        size = float(total_bytes)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size < 1024 or unit == "TB":
+                readable = f"{size:,.1f} {unit}"
+                break
+            size /= 1024
+        total = epub + pdf
+        text = (f"✓  {total:,} books found   ·   {epub:,} EPUB   ·   {pdf:,} PDF"
+                f"   ·   {readable}") if total else (
+                "No EPUB or PDF books in this folder yet — that is fine, "
+                "Lumen will pick them up later.")
+        self.root.after(0, lambda: self.library_count_label.config(text=text))
 
     def _browse_into(self, variable: tk.StringVar, title: str) -> None:
         current = variable.get().strip()
