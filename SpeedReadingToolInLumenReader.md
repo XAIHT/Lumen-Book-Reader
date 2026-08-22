@@ -1,6 +1,6 @@
 # Speed Reading Tool in Lumen Reader
 
-*Lumen Book Reader 1.1.0 · created by Angela López Mendoza · @angelahack1*
+*Lumen Book Reader 1.3.0 · created by Angela López Mendoza · @angelahack1*
 
 ## Executive summary
 

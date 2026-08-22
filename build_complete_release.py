@@ -8,8 +8,8 @@
 """build_complete_release.py - one command, one shippable archive.
 
     python build_complete_release.py                # version from the git tag
-    python build_complete_release.py --bump minor   # 1.1.0 -> 1.2.0, tag it, build
-    python build_complete_release.py --bump major   # 1.1.0 -> 2.0.0, tag it, build
+    python build_complete_release.py --bump minor   # 1.3.0 -> 1.4.0, tag it, build
+    python build_complete_release.py --bump major   # 1.3.0 -> 2.0.0, tag it, build
     python build_complete_release.py --version 2.0.0-rc1
 
 Pipeline

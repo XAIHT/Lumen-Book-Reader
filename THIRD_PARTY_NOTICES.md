@@ -1,6 +1,6 @@
 # Third-party notices
 
-This document identifies the principal third-party runtime libraries, bundled lexical data, optional external components, online definition services, and test-only tools used by Lumen Book Reader 1.1.0.
+This document identifies the principal third-party runtime libraries, bundled lexical data, optional external components, online definition services, and test-only tools used by Lumen Book Reader 1.3.0.
 
 It is an attribution and dependency inventory, not a replacement for the complete upstream license texts or legal advice. Anyone redistributing Lumen or a packaged executable must review the exact dependency versions and satisfy every applicable license.
 

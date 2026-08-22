@@ -19,9 +19,9 @@ Everything below explains what that command does and why each piece is there.
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.1.0 → 1.1.1) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.1.0 → 1.2.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.1.0 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.3.0 → 1.3.1) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.3.0 → 1.4.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.3.0 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -36,7 +36,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.2.0
+git push origin v1.4.0
 ```
 
 > **The pipeline never rewrites history.** Adding a tag is the only git write
@@ -263,7 +263,7 @@ rather than three minutes into an analysis pass.
 ## Verifying a release
 
 ```powershell
-cd Lumen_Release_v1.1.0
+cd Lumen_Release_v1.3.0
 Get-FileHash Installer.exe -Algorithm SHA256      # compare against SHA256SUMS.txt
 Get-Content RELEASE_MANIFEST.json | ConvertFrom-Json
 ```
