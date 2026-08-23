@@ -13,10 +13,9 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ---
 
-## Unreleased
+## [1.4.0] — 2026-08-23
 
-The library engine. Everything in this section is on `main` after `v1.3.0` and
-has not been tagged.
+Tag `v1.4.0` → `cf5a0ec`. The library engine.
 
 ### Added
 
@@ -87,7 +86,7 @@ Tag `v1.3.0` → `eb50c11`.
 
 > **Note.** The tag's message describes the improved welcome screen, advanced
 > search and advanced indexing system. That work lives in commits *after* this
-> tag and is listed under **Unreleased** above.
+> tag and is listed under **[1.4.0]** above.
 
 ---
 
@@ -179,7 +178,7 @@ never rewritten** — no rebase, no amend, no force-push, no tag deletion.
 1. **`v1.3.0`** is annotated *"Improved a lot the welcome screen empowering with
    advanced search and an advanced indexing system"*, but points at `eb50c11`,
    a documentation-only commit. The work it describes was committed afterwards
-   and is listed under **Unreleased**.
+   and is listed under **[1.4.0]**.
 2. **The RSVP start/end markers** shipped in **`v1.0.4`**, but `README.md` and
    `SpeedReadingToolInLumenReader.md` both introduce them as *"new in 1.1.0"*.
    `v1.1.0` is the release scheme.

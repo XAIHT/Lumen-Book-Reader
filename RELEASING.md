@@ -24,9 +24,9 @@ subsystems with their own design documents, see
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.3.0 → 1.3.1) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.3.0 → 1.4.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.3.0 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.4.0 → 1.4.1) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.4.0 → 1.5.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.4.0 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -41,7 +41,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.4.0
+git push origin v1.5.0
 ```
 
 > **The pipeline never rewrites history.** Adding a tag is the only git write

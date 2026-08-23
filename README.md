@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.3.0" src="https://img.shields.io/badge/LUMEN-v1.3.0-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.4.0" src="https://img.shields.io/badge/LUMEN-v1.4.0-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
