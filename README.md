@@ -121,6 +121,23 @@ Books that have not changed since the last sweep are recognised by size and modi
 
 Measured on a real 9,335-book, 15.9 GB library (8,207 EPUB and 1,128 PDF) on a 16-core / 22-thread machine: **9,335 books indexed in about four minutes**, with all 22 extractor processes busy, after which a title search answers in single-digit milliseconds.
 
+### Running on the machine you actually have
+
+Lumen is tuned on a 22-thread workstation with NVMe. **It is not built only for one.** The sweep asks what your machine is before deciding what to run on it, and scales itself down rather than taking the whole computer:
+
+| Your machine | What the sweep does |
+|---|---|
+| Mechanical (7200 rpm) disk, or a USB / SD card library | **2 extractor processes, 2 walkers, Normal priority.** A spindle has one head and ~100 random IOPS — more readers is measurably *slower*, not faster, and burns cores to be slower. |
+| 4 logical processors | **Leaves one core for the reader**, and never runs the fleet above Normal — so the window keeps repainting while the library indexes. |
+| 5–8 logical processors | One core kept back, Above-normal priority. |
+| Under 8 GB of RAM | A narrower fleet and fewer books held in flight. **The text budget is never reduced** — a slower sweep is a fair trade, a quietly less searchable library is not. |
+| A NAS or network share | Up to 8 workers: that is latency rather than seeks, so waiting in parallel genuinely helps. |
+| 22 threads and NVMe | One high-priority process per core, exactly as before. |
+
+None of this needs configuring, and none of it is hidden: **Configuration ▸ Sweep engine** prints the machine it detected, the decision it made, and the measurement behind it — *"C: reports a seek penalty: mechanical disk"* — underneath the fleet summary. Every number remains overridable, and an explicit setting is obeyed exactly, even one that is bad for the machine.
+
+There is no GPU requirement, no NVMe requirement, and no minimum core count. Reading a book — opening it, RSVP, definitions, notes, search — never touches any of this; it is the library *sweep* that scales, and it runs in the background with a monitor you can pause or stop.
+
 ### Running with or without a GPU
 
 There is one build of Lumen, and it adapts. Extraction and search are replaceable backends rather than inlined code, and both default to **Automatic**: Lumen detects what the machine has — CUDA GPU, the DirectStorage runtime, NVMe — and uses the fastest path that is genuinely available, falling back to the CPU fleet and SQLite FTS5 when it is not. Detection runs in the background at startup, so a machine with no GPU at all never waits for it and never has to be configured differently.
@@ -293,7 +310,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-**300 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, the sweep pipeline and its configuration round-trip, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, and the release scheme’s install/uninstall symmetry.
+**322 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, the sweep pipeline and its configuration round-trip, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
 
 ## 📚 Documentation
 

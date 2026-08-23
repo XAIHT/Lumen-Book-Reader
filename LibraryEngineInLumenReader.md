@@ -153,9 +153,71 @@ It is deliberately **lock-free**. The only consumer is a display, so a torn read
 
 ## Process priority and thread boost
 
-On Windows the sweep can raise its own priority class (`apply_process_priority`) and boost the walker threads (`boost_current_thread`). The default is **high** — not *realtime*, which starves the input queue and makes the machine feel broken.
+On Windows the sweep can raise its own priority class (`apply_process_priority`) and boost the walker threads (`boost_current_thread`). *Realtime* is offered but never chosen automatically: it starves the input queue and makes the machine feel broken.
 
 Priority is a per-sweep setting in **Configuration ▸ Sweep engine**, and `current_priority()` reports what the process actually holds, so the setting is checkable rather than aspirational.
+
+The default is **Automatic**, and what that resolves to is the subject of the next section.
+
+---
+
+## Sizing the sweep to the machine that is running it
+
+This engine was written and measured on a 22-processor workstation with NVMe. Its original defaults — one HIGH-priority extractor per logical processor, walker threads at twice the core count — are correct there and were actively hostile everywhere else. On a four-core laptop with a 7200 rpm disk they failed in three separate ways, and none of them involved a GPU:
+
+| What the old default did | Why it hurt |
+|---|---|
+| Four HIGH-priority processes on four cores | The reader's own Qt thread runs at Normal and now never wins. The window stops repainting, and a window that will not repaint reads as a hung program, not a busy one. |
+| Four extractors + eight walkers on one spindle | A 7200 rpm disk has **one head** and serves ~100 random IOPS. Concurrent streams do not read four books at once, they drag the head between four regions. Sequential 150 MB/s collapses to under 2 MB/s. It is *slower* than one worker, with four cores burnt to achieve it. |
+| Queue depths as multiples of the core count | Each in-flight result carries a whole book's extracted text. Sized for 64 GB, that is a swap storm on 8 GB. |
+
+`lumen_reader/machine_profile.py` answers four questions — logical processors, installed memory, what kind of volume, and whether it is removable — and `ScanConfig` consumes them wherever a knob is left on `auto`.
+
+### What it measures, and how
+
+- **Rotational media** is read with `IOCTL_STORAGE_QUERY_PROPERTY` against a volume handle opened with **zero** access rights. That is the one form of the call an ordinary user may make: `GENERIC_READ` on `\\.\C:` needs Administrator, and a probe that needs elevation always returns "unknown" for exactly the people this exists to serve. The same handle also yields the bus type, so NVMe, SATA SSD and spinning disk are told apart in one call — no subprocess, no WMI, microseconds.
+- **Memory** is `GlobalMemoryStatusEx` via ctypes, and `sysconf` off Windows. Deliberately not `psutil`: sizing must be correct in the frozen build, where no optional dependency is installed.
+- **Processors** is the affinity-limited count, not the installed one. A machine that has pinned Lumen to four processors has four.
+
+Every probe degrades to a safe "could not tell" rather than raising. A hardware probe must never be able to stop a book from opening.
+
+### What it decides
+
+| Measurement | Effect on `auto` |
+|---|---|
+| Volume pays a seek penalty (HDD, card reader, USB) | Fleet capped at **2** processes, walkers at **2**, priority **Normal** |
+| ≤ 8 logical processors | Fleet leaves **one core** for the reader |
+| ≤ 4 logical processors | Priority never above **Normal** |
+| 5–8 logical processors | Priority **Above normal** |
+| > 8 logical processors, solid-state | **One HIGH-priority process per core** — the original contract, unchanged |
+| < 8 GB RAM | Fleet capped at 4, result queue at 16 books in flight |
+| < 4 GB RAM | Fleet capped at 2, result queue at 8 |
+| Network share | Fleet capped at 8 — that is latency, not seeks, so workers wait in parallel rather than fighting over a head |
+
+Three properties of this design are deliberate and worth stating:
+
+- **The fleet is sized against the volume the *books* are on**, not the one Lumen is installed on. A library on an external drive tunes to that drive even when the program runs from NVMe.
+- **The text budget is never reduced.** Memory pressure is relieved by holding fewer books in flight, not by indexing less of each one. A slower sweep is a fair trade; a quietly less searchable library is not.
+- **Unknown storage is not treated as a spindle.** Throttling every machine whose disk we failed to identify would be the worse bug; the processor and memory guards still apply.
+
+### It says so out loud
+
+`ScanConfig.tuning_notes()` returns the reasoning, and it is shown in **Configuration ▸ Sweep engine** under the fleet summary and written into the sweep log as `Machine:` lines:
+
+```
+22 extractor processes at HIGH priority (1.00 per logical processor; …)
+    · 22 logical processors  ·  16 GB RAM  ·  NVMe solid-state
+    · C: is on an NVMe bus.
+    · Priority HIGH: this machine has processors to spare.
+```
+
+A fleet smaller than the core count looks like a bug until the sentence explaining the disk is sitting next to it. "Lumen decided your computer is slow", unexplained, is indistinguishable from Lumen being broken.
+
+### The user still decides
+
+`auto` applies **only** to a knob left at its default. An explicit setting is obeyed exactly, including one that is bad for the machine — 12 processes at Realtime on a laptop is available to anyone who asks for it. Second-guessing a deliberate choice is how a settings window stops being trusted.
+
+`tests/test_machine_profile.py` pins all of the above by *injecting* the machine rather than detecting it: a test that only passes on the workstation that runs it proves nothing about anyone else's hardware.
 
 ---
 
@@ -283,6 +345,10 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 - **DirectStorage detection is not DirectStorage support.** The probe reports whether the runtime could load and whether there is NVMe underneath. No GPU extraction kernel ships in this build.
 - **`nvidia-smi` only.** AMD and Intel GPUs are not detected, and would report as "no CUDA-capable GPU".
 - **Priority control is Windows-only.** On other platforms `apply_process_priority` is a no-op that reports what it actually did.
+- **Seek-penalty detection is Windows and Linux only.** Windows uses the storage IOCTL, Linux reads `/sys/block/<dev>/queue/rotational`. On macOS and elsewhere the volume reports `unknown`, which is deliberately *not* treated as rotational — the processor and memory guards still apply, but a Mac with a spinning external drive gets a wider fleet than it should.
+- **The seek-penalty query is per volume, not per file.** A library spanning two drives is tuned for the volume its root is on.
+- **A RAID or storage pool of spinning disks reports as one seek-bound volume.** Several heads are available but Lumen sizes for one, so such a library sweeps more slowly than the array can manage. Set the process count explicitly to override.
+- **`result_queue_depth` is now machine-aware but still has no control in the Configuration window**, so saving settings resets an explicit value to auto.
 - **The index is a cache, never a source of truth.** Deleting `library-index.db` costs one sweep and nothing else. Your books, reading positions, notes and marks are untouched by anything in this document.
 
 ## Sensible future extensions

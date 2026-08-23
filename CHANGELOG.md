@@ -13,6 +13,57 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`lumen_reader/machine_profile.py`** — Lumen now asks what machine it is on
+  before deciding what to run on it: logical processors (affinity-limited),
+  installed memory, and whether the volume holding the library pays a seek
+  penalty. Rotational media is detected with `IOCTL_STORAGE_QUERY_PROPERTY`
+  against a volume handle opened with **zero** access rights, which is the only
+  form of that call an unelevated user may make; the same handle yields the bus
+  type, so NVMe, SATA SSD and spinning disk are distinguished in one call with
+  no subprocess and no WMI. Linux reads `/sys/block/<dev>/queue/rotational`.
+  Every probe degrades to "could not tell" rather than raising.
+- **`ScanConfig.tuning_notes()`**, shown under the fleet summary in
+  **Configuration ▸ Sweep engine** and written into the sweep log, stating which
+  measurement caused each automatic decision.
+- **`accel.detect_library_volume()`** — reports what the *library* volume is, as
+  distinct from whether the machine has NVMe for DirectStorage.
+- **`tests/test_machine_profile.py`** — 20 tests that inject the machine rather
+  than detecting it, so the low-end behaviour is pinned on hardware the test
+  runner does not have.
+
+### Changed
+
+- **The sweep is sized to the machine instead of to the developer's.** The
+  defaults were one HIGH-priority extractor per logical processor and walkers at
+  twice the core count — correct on a 22-thread workstation with NVMe, and
+  hostile on a four-core laptop with a 7200 rpm disk, where four HIGH-priority
+  processes on four cores left the Qt thread unable to repaint (indistinguishable
+  from a hang) while four extractors and eight walkers thrashed a single disk
+  head into reading *slower* than one worker would have.
+  - A seek-bound volume now caps the fleet at 2 processes and 2 walkers.
+  - At or below 8 logical processors the fleet leaves one core for the reader.
+  - `priority` defaults to the new **`auto`**, which resolves to Normal at or
+    below four processors or on a spinning disk, Above normal to eight, and High
+    beyond that — so the workstation contract is unchanged on a workstation.
+  - Under 8 GB of RAM the fleet and the in-flight result queue are capped.
+    The **text budget is deliberately left alone**: memory is relieved by
+    holding fewer books in flight, never by indexing less of each one.
+- **An unparseable `priority` in a settings file now falls back to `auto`, not
+  `high`.** The case where the settings cannot be read is exactly the case where
+  the machine should be asked rather than assumed.
+- Unrecognised priority levels reaching `apply_process_priority` settle at
+  Normal rather than High — the fail-open version of that guard hurts the
+  machine least able to absorb it.
+
+Nothing here is automatic-only: an explicit process count, priority or walker
+count is obeyed exactly, including one that is bad for the machine.
+
+---
+
 ## [1.4.0] — 2026-08-23
 
 Tag `v1.4.0` → `cf5a0ec`. The library engine.

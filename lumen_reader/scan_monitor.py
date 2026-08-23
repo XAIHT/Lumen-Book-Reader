@@ -426,7 +426,11 @@ class ScanMonitorDialog(ScreenFittingDialog):
         layout.addWidget(self.sparkline)
 
         # ── the fleet ──────────────────────────────────────────────────────
-        fleet_heading = QLabel("THE FLEET  —  one ultra-priority process per core")
+        # Not "one process per core": that is what this fleet is on a machine
+        # with cores to spare, and a promise Lumen deliberately breaks on a
+        # four-core laptop or a spinning disk.  The tile count says what the
+        # fleet actually is; the heading must not contradict it.
+        fleet_heading = QLabel("THE FLEET  —  one tile per extractor process")
         fleet_heading.setObjectName("sweepSection")
         layout.addWidget(fleet_heading)
         self.grid = CoreGrid()

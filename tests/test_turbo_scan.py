@@ -281,9 +281,17 @@ def test_the_run_is_recorded_for_the_settings_window(library: Path, tmp_path: Pa
 # ─────────────────────────────── configuration ─────────────────────────────
 
 
-def test_the_default_fleet_is_one_process_per_logical_processor() -> None:
+def test_the_default_fleet_is_sized_from_the_machine_not_assumed() -> None:
+    """One per logical processor is the *ceiling*, not the rule.
+
+    It used to be the rule, and on four cores with a mechanical disk that took
+    the whole machine and froze the window.  What is guaranteed now is only that
+    the fleet is at least one process and never more than the machine has - the
+    hardware-specific numbers are pinned in ``test_machine_profile.py``, where
+    the machine can be injected instead of merely being the one running pytest.
+    """
     config = ScanConfig()
-    assert config.resolved_processes() == min(MAX_PROCESSES, os.cpu_count() or 4)
+    assert 1 <= config.resolved_processes() <= min(MAX_PROCESSES, os.cpu_count() or 4)
 
 
 def test_the_fleet_never_exceeds_the_windows_handle_limit() -> None:
@@ -304,7 +312,9 @@ def test_a_corrupt_settings_file_falls_back_to_defaults() -> None:
         {"processes": "not a number", "priority": "supersonic", "extensions": [], "walkers": None}
     )
     assert restored.processes == 0
-    assert restored.priority == "high"
+    # ``auto``, not ``high``: a settings file we cannot read is exactly the case
+    # where the machine should be asked rather than assumed.
+    assert restored.priority == "auto"
     assert restored.extensions == ScanConfig().extensions
 
 

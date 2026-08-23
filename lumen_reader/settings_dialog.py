@@ -59,9 +59,10 @@ from .accel import (
 from .dialog_layout import ScreenFittingDialog, WheelSafeComboBox, WheelSafeSpinBox
 from .library_index import LibraryIndex
 from .turbo_scan import (
+    AUTO_PRIORITY,
     MAX_PROCESSES,
+    PRIORITY_CHOICES,
     PRIORITY_LABELS,
-    PRIORITY_ORDER,
     ScanConfig,
     cpu_topology,
     describe_fleet,
@@ -442,23 +443,28 @@ class ConfigurationDialog(ScreenFittingDialog):
             f"sweep monitor shows every one of them by PID while it works.",
         )
         self.processes_spin = spin(0, MAX_PROCESSES, self.scan_config.processes,
-                                   special=f"One per processor ({logical})")
+                                   special=f"Automatic ({self.scan_config.resolved_processes()})")
         self.processes_spin.valueChanged.connect(lambda _v: self._refresh_fleet_summary())
         labelled(fleet, "Extractor processes", self.processes_spin,
-                 f"0 means one per logical processor. Windows cannot wait on more "
-                 f"than {MAX_PROCESSES} at once, so that is the ceiling.")
+                 f"0 asks this machine rather than assuming one per core: a mechanical "
+                 f"disk or a small processor count gets a smaller fleet, because a wide "
+                 f"one there is slower and leaves the reader unable to repaint. Set a "
+                 f"number to override that. Windows cannot wait on more than "
+                 f"{MAX_PROCESSES} at once, so that is the ceiling.")
 
         self.priority_combo = WheelSafeComboBox()
-        for name in PRIORITY_ORDER:
+        for name in PRIORITY_CHOICES:
             self.priority_combo.addItem(PRIORITY_LABELS[name], name)
-        index = list(PRIORITY_ORDER).index(self.scan_config.priority) \
-            if self.scan_config.priority in PRIORITY_ORDER else 4
+        index = list(PRIORITY_CHOICES).index(self.scan_config.priority) \
+            if self.scan_config.priority in PRIORITY_CHOICES else 0
         self.priority_combo.setCurrentIndex(index)
         self.priority_combo.currentIndexChanged.connect(lambda _i: self._refresh_fleet_summary())
         labelled(fleet, "Process priority", self.priority_combo,
-                 "Each worker raises itself the moment it starts. Realtime is offered "
-                 "because you asked for maximum, but a realtime fleet can starve the "
-                 "desktop of its own input — High is the one to use.")
+                 "Each worker raises itself the moment it starts. Automatic takes High "
+                 "where there are cores to spare and steps down where there are not — "
+                 "on four cores or a spinning disk, a High fleet freezes the window it "
+                 "is indexing for. Realtime is offered because you asked for maximum, "
+                 "but a realtime fleet can starve the desktop of its own input.")
 
         self.walkers_spin = spin(0, 256, self.scan_config.walkers,
                                  special=f"Automatic ({self.scan_config.resolved_walkers()})")
@@ -531,10 +537,18 @@ class ConfigurationDialog(ScreenFittingDialog):
             return
         preview = ScanConfig(
             processes=self.processes_spin.value(),
-            priority=self.priority_combo.currentData() or "high",
+            priority=self.priority_combo.currentData() or AUTO_PRIORITY,
             walkers=self.walkers_spin.value(),
         )
-        self.fleet_summary.setText("Pressing Sweep will launch:  " + describe_fleet(preview))
+        # The folder box is built on an earlier tab, but this can fire during
+        # construction; a missing box just means "profile the current volume".
+        edit = getattr(self, "root_edit", None)
+        root = (edit.text().strip() or None) if edit is not None else None
+        lines = ["Pressing Sweep will launch:  " + describe_fleet(preview, root)]
+        # Say *why*, not just what.  A fleet that is smaller than the core count
+        # looks like a bug until the sentence explaining the disk is next to it.
+        lines.extend(f"    · {note}" for note in preview.tuning_notes(root))
+        self.fleet_summary.setText("\n".join(lines))
 
     # ── tab: acceleration ──────────────────────────────────────────────────
 
@@ -896,7 +910,7 @@ class ConfigurationDialog(ScreenFittingDialog):
             min_bytes=self.min_size_spin.value() * 1024,
             max_bytes=self.max_size_spin.value() * 1024 * 1024,
             processes=self.processes_spin.value(),
-            priority=self.priority_combo.currentData() or "high",
+            priority=self.priority_combo.currentData() or AUTO_PRIORITY,
             walkers=self.walkers_spin.value(),
             walk_queue_depth=self.walk_queue_spin.value(),
             job_queue_depth=self.job_queue_spin.value(),

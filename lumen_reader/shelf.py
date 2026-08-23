@@ -588,7 +588,8 @@ class LibraryShelf(QWidget):
         self.rescan_button.setObjectName("smallButton")
         self.rescan_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.rescan_button.setToolTip(
-            "Read every book under the library folder, one ultra-priority process per core"
+            "Read every book under the library folder, with a fleet of extractor "
+            "processes sized to this machine"
         )
         self.rescan_button.clicked.connect(self.rescan_requested)
         footer.addWidget(self.rescan_button)

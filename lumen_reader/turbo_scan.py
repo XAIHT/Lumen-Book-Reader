@@ -74,6 +74,7 @@ from typing import Any, Callable, Sequence
 if sys.platform == "win32":          # ctypes.wintypes does not exist elsewhere
     from ctypes import wintypes
 
+from . import machine_profile
 from .library_index import (
     BOOK_SUFFIXES,
     DEFAULT_TEXT_BUDGET,
@@ -89,7 +90,11 @@ from .library_index import (
 
 # ───────────────────────────── process priority ────────────────────────────
 #
-# Angela's requirement is explicit: one *ultra priority* process per core.  On
+# Angela's requirement was explicit: one *ultra priority* process per core - and
+# it still is, on a machine with cores to spare, which is where it was written.
+# It is deliberately not honoured on a four-core laptop or a spinning disk,
+# because there it starves the reader's own thread and indexes more slowly for
+# the trouble; see ``auto_priority`` and ``ScanConfig.resolved_processes``.  On
 # Windows that is a priority class on the process plus a thread priority on the
 # thread that actually parses, applied by the worker to itself the moment it
 # starts - a parent cannot reliably raise a child that has not spawned yet.
@@ -115,11 +120,42 @@ PRIORITY_LABELS: dict[str, str] = {
     "below": "Below normal (stay out of the way)",
     "normal": "Normal",
     "above": "Above normal",
-    "high": "High  —  recommended, one per core",
+    "high": "High  —  one per core, for a machine with cores to spare",
     "realtime": "Realtime  —  maximum, can starve the desktop",
 }
 
 PRIORITY_ORDER: tuple[str, ...] = ("idle", "below", "normal", "above", "high", "realtime")
+
+#: ``auto`` is the default, and it is not one of the classes above - it is a
+#: *decision* made against :mod:`lumen_reader.machine_profile` at sweep time.
+#: It is kept out of ``PRIORITY_ORDER`` deliberately: that tuple is the step-down
+#: ladder ``apply_process_priority`` walks, and a pseudo-level in it would make
+#: a refused request able to step down into "auto", which is not a thing Windows
+#: can be asked for.
+AUTO_PRIORITY = "auto"
+
+#: What the settings window offers, in order.  ``auto`` first because it is the
+#: right answer for almost everyone, and the only one that is right on every
+#: machine.
+PRIORITY_CHOICES: tuple[str, ...] = (AUTO_PRIORITY, *PRIORITY_ORDER)
+
+PRIORITY_LABELS[AUTO_PRIORITY] = (
+    "Automatic  —  match this machine, and leave the reader responsive"
+)
+
+
+def auto_priority(root: Any = None) -> str:
+    """What ``auto`` resolves to for the volume holding *root*.
+
+    One function so the answer cannot drift: the settings window, the sweep and
+    a worker that was handed ``auto`` directly all ask here.
+    """
+    machine = machine_profile.profile(root)
+    if machine.seek_bound or machine.logical_cpus <= 4:
+        return "normal"
+    if machine.logical_cpus <= machine_profile.SMALL_CPU_CEILING:
+        return "above"
+    return "high"
 
 _THREAD_PRIORITY_HIGHEST = 2
 _THREAD_PRIORITY_TIME_CRITICAL = 15
@@ -177,7 +213,13 @@ def apply_process_priority(level: str) -> str:
     desktop out of its own input queue - and needs a privilege an ordinary user
     does not have, so a refused request steps down instead of failing the sweep.
     """
-    level = level if level in WINDOWS_PRIORITY_CLASSES else "high"
+    # A worker handed ``auto`` asks the machine; anything else unrecognised
+    # settles at Normal rather than High.  Guessing high for a value we could
+    # not parse is the fail-open version of this decision, and the machine it
+    # would hurt is the one least able to absorb it.
+    if level == AUTO_PRIORITY:
+        level = auto_priority()
+    level = level if level in WINDOWS_PRIORITY_CLASSES else "normal"
     if sys.platform == "win32":
         try:
             kernel32 = _kernel32()
@@ -287,8 +329,12 @@ class ScanConfig:
     max_bytes: int = 0                 # 0 = unlimited
 
     # ── how hard to sweep ──────────────────────────────────────────────────
-    processes: int = 0                 # 0 = one per logical processor
-    priority: str = "high"
+    #: 0 = decide from the machine.  Not "one per logical processor": that is
+    #: right on a workstation and wrong on a four-core laptop with a spinning
+    #: disk, where it takes every core the reader needs to repaint.  See
+    #: :meth:`resolved_processes`.
+    processes: int = 0
+    priority: str = AUTO_PRIORITY
     walkers: int = 0                   # 0 = auto from the core count
     walk_queue_depth: int = 0          # 0 = auto
     job_queue_depth: int = 0           # 0 = auto
@@ -314,26 +360,143 @@ class ScanConfig:
 
     # ── derived sizing ─────────────────────────────────────────────────────
 
-    def resolved_processes(self) -> int:
-        wanted = self.processes if self.processes > 0 else (os.cpu_count() or 4)
-        return max(1, min(MAX_PROCESSES, int(wanted)))
+    def resolved_processes(self, root: Any = None) -> int:
+        """How many extractor processes ``auto`` means on *this* machine.
 
-    def resolved_walkers(self) -> int:
+        An explicit setting is obeyed exactly, including one that is bad for the
+        machine - the user asked, and second-guessing a deliberate choice is how
+        a settings window stops being trusted.  Everything below applies only to
+        the ``0`` default.
+
+        Three measurements move the number, in this order:
+
+        * **A seek-bound volume caps the fleet at two.**  A 7200 rpm disk has one
+          head and serves on the order of 100 random IOPS.  Four extractors do
+          not read four books at once from it, they make the head travel between
+          four regions, and the sweep gets *slower* than a single worker while
+          burning four cores to do it.  Two keeps a read queued while the other
+          worker is parsing, which is all a spindle can usefully absorb.
+        * **A small machine keeps a core for the reader.**  At or below
+          :data:`~lumen_reader.machine_profile.SMALL_CPU_CEILING` logical
+          processors, one process per core leaves the Qt thread nothing, and an
+          unrepainted window reads as a hung program rather than a busy one.
+          Above that ceiling nothing changes: one per core, as specified.
+        * **Little memory caps it again.**  Every worker holds a book and its
+          extracted text; on an 8 GB machine a wide fleet swaps.
+        """
+        if self.processes > 0:
+            return max(1, min(MAX_PROCESSES, int(self.processes)))
+
+        machine = machine_profile.profile(root)
+        logical = machine.logical_cpus
+
+        if machine.seek_bound:
+            wanted = 2
+        elif machine.storage == machine_profile.STORAGE_NETWORK:
+            # A share is latency, not seeks: extra workers wait in parallel
+            # instead of queueing behind one another, but the link is still the
+            # ceiling, so there is no point going wide.
+            wanted = min(8, max(2, logical))
+        elif logical <= machine_profile.SMALL_CPU_CEILING:
+            wanted = logical - 1
+        else:
+            wanted = logical
+
+        if machine.tight_memory:
+            wanted = min(wanted, 2)
+        elif machine.low_memory:
+            wanted = min(wanted, 4)
+
+        return max(1, min(MAX_PROCESSES, wanted))
+
+    def resolved_priority(self, root: Any = None) -> str:
+        """The priority class the fleet will actually ask Windows for.
+
+        ``auto`` is not timidity.  On a machine with cores to spare, HIGH is
+        free - the reader's thread still gets scheduled - and it is what Angela
+        specified.  On a machine where the fleet occupies every processor, HIGH
+        is the difference between "the library is indexing" and "Lumen has
+        frozen", because the Qt thread runs at Normal and now never wins.
+
+        A spinning disk drops it further, to Normal: that sweep is waiting on
+        the head, not on the CPU, so raising its priority buys nothing at all
+        and costs the desktop everything.
+        """
+        if self.priority != AUTO_PRIORITY:
+            return self.priority if self.priority in WINDOWS_PRIORITY_CLASSES else "high"
+        return auto_priority(root)
+
+    def resolved_walkers(self, root: Any = None) -> int:
         if self.walkers > 0:
             return max(1, min(256, int(self.walkers)))
+        machine = machine_profile.profile(root)
+        if machine.seek_bound:
+            # Concurrent ``scandir`` against one head is the same thrash as
+            # concurrent reads, and directory metadata is scattered.
+            return 2
         # A share is mostly latency, so oversubscribing the walk pays for itself
         # long before it costs anything: these threads sit in ``scandir``.
-        return max(4, min(64, (os.cpu_count() or 4) * 2))
+        return max(4, min(64, machine.logical_cpus * 2))
 
     def resolved_walk_queue(self) -> int:
         return self.walk_queue_depth if self.walk_queue_depth > 0 else 20_000
 
-    def resolved_job_queue(self) -> int:
-        return self.job_queue_depth if self.job_queue_depth > 0 else self.resolved_processes() * 64
+    def resolved_job_queue(self, root: Any = None) -> int:
+        return (self.job_queue_depth if self.job_queue_depth > 0
+                else self.resolved_processes(root) * 64)
 
-    def resolved_result_queue(self) -> int:
-        return (self.result_queue_depth if self.result_queue_depth > 0
-                else self.resolved_processes() * 64)
+    def resolved_result_queue(self, root: Any = None) -> int:
+        """Depth of the finished-work queue, which is where the memory is.
+
+        A queued *job* is a path.  A queued *result* is a whole book's extracted
+        text - up to ``text_budget`` characters - so this queue, not the index,
+        is what a small machine runs out of memory on.  The budget is left
+        alone: shrinking it would silently make search worse, and a slower sweep
+        is a fair trade where a quietly less searchable library is not.
+        """
+        if self.result_queue_depth > 0:
+            return self.result_queue_depth
+        machine = machine_profile.profile(root)
+        depth = 8 if machine.tight_memory else 16 if machine.low_memory else 64
+        return self.resolved_processes(root) * depth
+
+    def tuning_notes(self, root: Any = None) -> list[str]:
+        """Why ``auto`` chose what it chose, in words a user can check.
+
+        Every automatic decision here is visible and reversible.  A program that
+        quietly decides your computer is slow, and never says so, is a program
+        you cannot tell apart from a broken one.
+        """
+        machine = machine_profile.profile(root)
+        notes = [machine.summary(), machine.storage_detail]
+        if self.processes == 0:
+            if machine.seek_bound:
+                notes.append(
+                    f"Fleet held to {self.resolved_processes(root)} processes: this volume "
+                    f"pays a seek penalty, and more readers on one head is slower, not faster."
+                )
+            elif machine.logical_cpus <= machine_profile.SMALL_CPU_CEILING:
+                notes.append(
+                    f"Fleet held to {self.resolved_processes(root)} of "
+                    f"{machine.logical_cpus} processors, so the reader keeps one and the "
+                    f"window still repaints while the sweep runs."
+                )
+        if self.priority == AUTO_PRIORITY:
+            notes.append(
+                f"Priority {self.resolved_priority(root).upper()}: "
+                + ("the sweep waits on the disk here, so raising it would only "
+                   "starve the desktop." if machine.seek_bound else
+                   "this machine has processors to spare." if machine.logical_cpus
+                   > machine_profile.SMALL_CPU_CEILING else
+                   "high priority on a small machine costs more than it buys.")
+            )
+        if machine.low_memory:
+            notes.append(
+                f"Result queue held to {self.resolved_result_queue(root)} books in flight "
+                f"to keep extracted text out of the page file.  Text budget unchanged: "
+                f"search quality is not traded for speed."
+            )
+        return [note for note in notes if note]
 
     def effective_text_budget(self) -> int:
         return max(0, int(self.text_budget)) if self.with_text else 0
@@ -406,8 +569,11 @@ class ScanConfig:
         config.min_bytes = whole("min_bytes", 0)
         config.max_bytes = whole("max_bytes", 0)
         config.processes = whole("processes", 0, 0, MAX_PROCESSES)
-        priority = str(data.get("priority", "high")).strip().casefold()
-        config.priority = priority if priority in WINDOWS_PRIORITY_CLASSES else "high"
+        # A malformed or unknown priority falls back to ``auto`` rather than to
+        # ``high``: a settings file we cannot read is exactly the case where the
+        # machine should be asked instead of assumed.
+        priority = str(data.get("priority", AUTO_PRIORITY)).strip().casefold()
+        config.priority = priority if priority in PRIORITY_CHOICES else AUTO_PRIORITY
         config.walkers = whole("walkers", 0, 0, 256)
         config.walk_queue_depth = whole("walk_queue_depth", 0, 0, 10_000_000)
         config.job_queue_depth = whole("job_queue_depth", 0, 0, 1_000_000)
@@ -537,7 +703,7 @@ def extractor_main(
     abort: Any,
     priority: str,
 ) -> None:
-    """One ultra-priority extractor.  Runs in its own OS process, forever.
+    """One extractor, at whatever priority the sweep resolved.  Its own process.
 
     Lives at module level because Windows spawns workers by re-importing this
     module and looking the target up by name.  It must never raise: an extractor
@@ -623,8 +789,13 @@ class TurboScanner:
         self.config = config or ScanConfig()
         self._on_message = on_message
 
-        self._processes = self.config.resolved_processes()
-        self._walker_count = self.config.resolved_walkers()
+        # Sized against the volume the *books* are on, not the one Lumen is
+        # installed on: the sweep's cost is reading them, so a library on an
+        # external disk must tune to that disk even when the program runs from
+        # an NVMe.
+        self._processes = self.config.resolved_processes(self.root)
+        self._walker_count = self.config.resolved_walkers(self.root)
+        self._priority = self.config.resolved_priority(self.root)
         self._suffixes = self.config.suffix_set() or set(BOOK_SUFFIXES)
         self._skip = {name.casefold() for name in self.config.skip_directories}
         self._globs = tuple(pattern.casefold() for pattern in self.config.exclude_globs)
@@ -655,7 +826,7 @@ class TurboScanner:
         self._last_sample = (0.0, 0)
         self._rate = 0.0
         self._byte_rate = 0.0
-        self._priority_taken = self.config.priority
+        self._priority_taken = self._priority
 
         # ── control ────────────────────────────────────────────────────────
         self._cancel = threading.Event()
@@ -707,8 +878,10 @@ class TurboScanner:
         self._say(
             f"Sweep armed on {self.root}  ·  {self._processes} extractor "
             f"{'process' if self._processes == 1 else 'processes'} at "
-            f"{self.config.priority.upper()} priority  ·  {self._walker_count} walker threads"
+            f"{self._priority.upper()} priority  ·  {self._walker_count} walker threads"
         )
+        for note in self.config.tuning_notes(self.root):
+            self._say(f"Machine: {note}")
         self._say(f"Engine: {self.backend}  —  {self.backend_reason}")
         control = threading.Thread(target=self._control, name="lumen-sweep", daemon=True)
         control.start()
@@ -1167,10 +1340,11 @@ class TurboScanner:
     def _start_extractors(self) -> None:
         context = self._context
         self._abort = context.Event()
-        self._jobs = queue.Queue(maxsize=self.config.resolved_job_queue()) if self._inline \
-            else context.Queue(maxsize=self.config.resolved_job_queue())
+        job_depth = self.config.resolved_job_queue(self.root)
+        self._jobs = queue.Queue(maxsize=job_depth) if self._inline \
+            else context.Queue(maxsize=job_depth)
         self._results = queue.Queue() if self._inline \
-            else context.Queue(maxsize=self.config.resolved_result_queue())
+            else context.Queue(maxsize=self.config.resolved_result_queue(self.root))
 
         for _ in range(self._processes):
             if self._inline:
@@ -1199,7 +1373,7 @@ class TurboScanner:
             process = context.Process(
                 target=extractor_main,
                 args=(position, self._jobs, self._results, self._vitals[position],
-                      self._paths[position], self._abort, self.config.priority),
+                      self._paths[position], self._abort, self._priority),
                 name=f"lumen-extract-{position}", daemon=True,
             )
             process.start()
@@ -1469,14 +1643,19 @@ def sweep(
     return final
 
 
-def describe_fleet(config: ScanConfig) -> str:
-    """One sentence describing exactly what pressing Sweep will launch."""
-    processes = config.resolved_processes()
+def describe_fleet(config: ScanConfig, root: Any = None) -> str:
+    """One sentence describing exactly what pressing Sweep will launch.
+
+    *root* is the library folder, because the fleet is sized against the volume
+    the books are on.  Omitting it describes the fleet for the current working
+    volume, which is what the settings window wants before a library is chosen.
+    """
+    processes = config.resolved_processes(root)
     physical, logical = cpu_topology()
-    priority = config.priority.upper()
+    priority = config.resolved_priority(root).upper()
     per_core = processes / max(1, logical)
     return (
         f"{processes} extractor process{'' if processes == 1 else 'es'} at {priority} priority "
         f"({per_core:.2f} per logical processor; this machine has {physical} cores / "
-        f"{logical} logical processors) and {config.resolved_walkers()} walker threads."
+        f"{logical} logical processors) and {config.resolved_walkers(root)} walker threads."
     )

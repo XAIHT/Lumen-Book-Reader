@@ -19,7 +19,7 @@ have real depth:
 |---|---|---|
 | Reading surface | `lumen_reader/ui.py`, `book.py`, `pdf_book.py` | — |
 | RSVP speed reader | `lumen_reader/speed_reader.py` | [SpeedReadingToolInLumenReader.md](SpeedReadingToolInLumenReader.md) |
-| Library engine | `lumen_reader/turbo_scan.py`, `library_index.py`, `accel.py` | [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md) |
+| Library engine | `lumen_reader/turbo_scan.py`, `library_index.py`, `accel.py`, `machine_profile.py` | [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md) |
 | Definitions | `lumen_reader/dictionary.py`, `smart_definition.py` | — |
 | Release scheme | `build_complete_release.py` and friends | [RELEASING.md](RELEASING.md) |
 
@@ -36,13 +36,13 @@ the whole file.
   have `tkinter`. See RELEASING.md ▸ Requirements.
 
 ```powershell
-& "C:/Program Files/Python312/pythonw.exe" D:\Lumen-Book-Reader\run_reader.py
+& "C:/Program Files/Python312/pythonw.exe" C:\Lumen-Book-Reader\run_reader.py
 ```
 
 ## Tests
 
 ```powershell
-python -m pytest        # 300 tests
+python -m pytest        # 322 tests
 ```
 
 Per Angela's global rule, run them in a **visible foreground window** she can
@@ -106,6 +106,16 @@ version history* records the two places where this has already gone wrong.
   distinguishes "no GPU on this machine" from "hardware ready, no kernel
   registered in this build". Docs follow the same rule: a reserved seam is
   documented as a seam.
+- **Never assume capability that is not there either.** This machine has 22
+  threads and NVMe; almost nobody else's does. Any default sized from
+  `os.cpu_count()`, any priority above Normal, any queue depth multiplied by the
+  core count is a decision about *someone else's* four-core laptop with a
+  spinning disk. Ask `machine_profile.profile(root)` and size from the answer,
+  cap on `seek_bound` and `low_memory`, and make the reasoning visible via
+  `tuning_notes()`. Relieve memory pressure by doing less at once, never by
+  silently doing a worse job — the text budget is not a tuning knob.
+  `tests/test_machine_profile.py` injects the machine instead of detecting it,
+  so low-end behaviour stays pinned on hardware this machine does not have.
 - **User data is sacred; the index is not.** `library-index.db` in
   `%APPDATA%\Lumen Reader` is a rebuildable cache. Reading positions, notes,
   quotes, tags and `lumen-reading-marks.json` are not — they survive uninstall
@@ -128,6 +138,11 @@ Documented so nobody rediscovers them as bugs. All are recorded in
   no reader. Correct today — nothing else is registered — but unwired.
 - **`result_queue_depth`** is a live `ScanConfig` knob with no control in the
   Configuration window, so saving settings resets it to auto.
+- **Seek-penalty detection is Windows and Linux only.** macOS reports `unknown`,
+  which is deliberately not treated as rotational; the CPU and memory guards
+  still apply, but a Mac with a spinning external drive gets a wider fleet than
+  it should. A RAID or storage pool of spinning disks likewise reports as one
+  seek-bound volume, so Lumen sizes for one head where several exist.
 - **In the frozen build, each spawned extractor walks the full GUI import path**
   (`lumen_main` → `launcher.main` → PySide6 and `ui.py`) before
   `multiprocessing.freeze_support()` exits it. Correct, but it costs a Qt import

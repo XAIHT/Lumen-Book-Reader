@@ -114,7 +114,9 @@ def detect_cpu() -> Accelerator:
         kind="cpu",
         name=f"{physical} cores / {logical} logical processors",
         available=True,
-        detail=f"Extraction fleet: up to {logical} ultra-priority processes, one per processor.",
+        detail=f"Extraction fleet: up to {logical} processes, one per processor. "
+               f"The sweep takes fewer where this machine cannot spare them - see "
+               f"Sweep engine for the fleet it will actually launch.",
     )
 
 
@@ -204,6 +206,32 @@ def detect_storage() -> Accelerator:
         kind="storage", name="No NVMe detected", available=False,
         detail=f"Buses seen: {', '.join(sorted(buses)) or 'unknown'}. "
                f"DirectStorage gives little on SATA and nothing over SMB.",
+    )
+
+
+def detect_library_volume(root: Any = None) -> Accelerator:
+    """What the *library* actually sits on, and what Lumen does about it.
+
+    :func:`detect_storage` answers a DirectStorage question about the machine.
+    This answers the question that changes behaviour today, about one folder:
+    a library on a mechanical disk or a card reader gets a narrow fleet at
+    Normal priority whatever the rest of the machine looks like, and the user is
+    entitled to see that stated rather than infer it from a sweep that uses two
+    of their eight cores.
+
+    ``available`` here means "reads concurrently without a seek penalty", not
+    "is fast" - a SATA SSD is unremarkable and entirely fine.
+    """
+    from . import machine_profile
+
+    machine = machine_profile.profile(root)
+    label = machine_profile.STORAGE_LABELS.get(machine.storage, machine.storage)
+    return Accelerator(
+        kind="storage",
+        name=f"Library volume: {label}",
+        available=not machine.seek_bound,
+        detail=machine.storage_detail,
+        memory_bytes=machine.ram_bytes,
     )
 
 
@@ -368,7 +396,7 @@ GPU_RESIDENT = "gpu-resident"
 
 EXTRACTION_BACKENDS: dict[str, str] = {
     AUTO: "Automatic  —  use the GPU when this machine has one, the CPU when it does not",
-    CPU_FLEET: "CPU process fleet  —  one ultra-priority process per core (always available)",
+    CPU_FLEET: "CPU process fleet  —  extractor processes sized to this machine (always available)",
     GPU_DIRECTSTORAGE: "Force GPU + DirectStorage  —  NVMe streamed straight into VRAM",
 }
 
