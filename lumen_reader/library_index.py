@@ -36,11 +36,11 @@ import html
 import os
 import re
 import sqlite3
+import time
 import zipfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 from xml.etree import ElementTree as ET
 
 BOOK_SUFFIXES = {".epub", ".pdf"}
@@ -49,6 +49,12 @@ BOOK_SUFFIXES = {".epub", ".pdf"}
 #: subject matter are overwhelmingly decided in the front matter, so a bounded
 #: head keeps the index proportionate to the shelf instead of to the corpus.
 DEFAULT_TEXT_BUDGET = 250_000
+
+#: How many opening pages may come back with no text at all before a PDF is
+#: taken to have no text layer.  Generous enough for a cover, front matter and
+#: a plate section; short enough that a scanned encyclopedia is not parsed to
+#: the last of its two thousand pages for nothing.
+_PDF_EMPTY_PAGE_LIMIT = 24
 
 #: Directories that never hold a reader's library but can hold thousands of
 #: files.  Skipping them keeps the walk honest on a repository-shaped root.
@@ -222,7 +228,7 @@ def _epub_record(path: Path, text_budget: int) -> dict[str, Any]:
     return record
 
 
-def _pdf_record(path: Path, text_budget: int) -> dict[str, Any]:
+def _pdf_record(path: Path, text_budget: int, page_cap: int = 0) -> dict[str, Any]:
     import pymupdf  # imported per worker; MuPDF is heavy to load
 
     # MuPDF narrates every unsupported annotation and broken colour profile it
@@ -254,15 +260,25 @@ def _pdf_record(path: Path, text_budget: int) -> dict[str, Any]:
         if text_budget > 0 and not record.get("locked"):
             chunks: list[str] = []
             budget = text_budget
-            for page in document:
-                if budget <= 0:
+            empty_run = 0
+            for number, page in enumerate(document):
+                if budget <= 0 or (page_cap and number >= page_cap):
                     break
                 try:
                     text = _SPACE_RE.sub(" ", page.get_text()).strip()
                 except Exception:
                     continue
                 if not text:
+                    # A scanned book has no text layer at all, and asking MuPDF
+                    # for one costs a full page parse every time.  Measured on a
+                    # real 1,128-PDF shelf, a handful of 200 MB scans held the
+                    # whole fleet at a standstill for minutes.  Pages that keep
+                    # coming back empty mean there is nothing here to index.
+                    empty_run += 1
+                    if empty_run >= _PDF_EMPTY_PAGE_LIMIT and not chunks:
+                        break
                     continue
+                empty_run = 0
                 chunks.append(text[:budget])
                 budget -= len(text)
             record["body"] = " ".join(chunks)[:text_budget]
@@ -270,9 +286,15 @@ def _pdf_record(path: Path, text_budget: int) -> dict[str, Any]:
     return record
 
 
-def extract_book(job: tuple[str, str, int]) -> dict[str, Any]:
-    """Worker entry point: pull metadata and indexable text from one book."""
-    path_text, suffix, text_budget = job
+def extract_book(job: Sequence[Any]) -> dict[str, Any]:
+    """Worker entry point: pull metadata and indexable text from one book.
+
+    The job is ``(path, suffix, text_budget)`` with an optional fourth element
+    capping how many PDF pages may be read.  Accepting both lengths keeps the
+    signature stable for callers that never needed the cap.
+    """
+    path_text, suffix, text_budget = job[0], job[1], job[2]
+    page_cap = int(job[3]) if len(job) > 3 else 0
     path = Path(path_text)
     result: dict[str, Any] = {
         "path": path_text,
@@ -288,7 +310,8 @@ def extract_book(job: tuple[str, str, int]) -> dict[str, Any]:
         "error": "",
     }
     try:
-        record = _pdf_record(path, text_budget) if suffix == ".pdf" else _epub_record(path, text_budget)
+        record = (_pdf_record(path, text_budget, page_cap) if suffix == ".pdf"
+                  else _epub_record(path, text_budget))
     except Exception as exception:  # a broken book must never kill the pool
         result["ok"] = False
         result["error"] = f"{type(exception).__name__}: {exception}"[:400]
@@ -360,11 +383,29 @@ CREATE TABLE IF NOT EXISTS books (
     pages       INTEGER NOT NULL DEFAULT 0,
     has_text    INTEGER NOT NULL DEFAULT 0,
     ok          INTEGER NOT NULL DEFAULT 1,
-    error       TEXT    NOT NULL DEFAULT ''
+    error       TEXT    NOT NULL DEFAULT '',
+    seen_gen    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS books_root  ON books(root);
 CREATE INDEX IF NOT EXISTS books_ext   ON books(root, ext);
 CREATE INDEX IF NOT EXISTS books_title ON books(root, title COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS books_gen   ON books(root, seen_gen);
+
+-- One row per completed sweep, so the settings window can say what actually
+-- happened last time instead of leaving the reader to guess.
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id          INTEGER PRIMARY KEY,
+    root        TEXT    NOT NULL,
+    generation  INTEGER NOT NULL,
+    finished_at REAL    NOT NULL,
+    seconds     REAL    NOT NULL DEFAULT 0,
+    found       INTEGER NOT NULL DEFAULT 0,
+    indexed     INTEGER NOT NULL DEFAULT 0,
+    skipped     INTEGER NOT NULL DEFAULT 0,
+    failed      INTEGER NOT NULL DEFAULT 0,
+    cancelled   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS scan_runs_root ON scan_runs(root, finished_at DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
     title, author, name, subjects, publisher,
@@ -377,7 +418,154 @@ CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
     book_id UNINDEXED,
     tokenize = "unicode61 remove_diacritics 2"
 );
+
+-- The index FTS5 refuses to give us.
+--
+-- ``book_id`` has to be UNINDEXED - indexing it would tokenise integers into
+-- the same vocabulary as the prose and poison every search - but that leaves
+-- ``DELETE FROM content_fts WHERE book_id = ?`` with no way to find its row.
+-- SQLite plans it as ``SCAN content_fts VIRTUAL TABLE INDEX 0:``: a full pass
+-- over the entire full-text index, which on a real library IS the database.
+-- Re-indexing one book therefore cost a scan of all of them.  Measured on a
+-- 235 MB index that is 218 ms per book against 2.1 ms by rowid - 105x - and
+-- the gap grows with the index, because one side is O(n) and the other is not.
+-- On a 10.4 GB index it worked out at ten seconds a book, which is how a sweep
+-- of 304 changed books came to commit seventeen of them and then appear to
+-- stop forever.
+--
+-- So we keep the rowids ourselves.  One row per book, holding where that book
+-- sits in each FTS table, and every delete becomes a rowid lookup.
+CREATE TABLE IF NOT EXISTS fts_rowid (
+    book_id     INTEGER PRIMARY KEY,
+    meta_row    INTEGER,
+    content_row INTEGER
+);
+
+-- Small durable facts about the index itself - currently just whether the map
+-- above has been built, which cannot be inferred from its contents (an empty
+-- map is also what a library with no books looks like).
+CREATE TABLE IF NOT EXISTS index_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+#: ``index_meta`` key recording that :func:`build_fts_map` has run.
+FTS_MAP_KEY = "fts_map_built"
+
+
+# ── the FTS rowid map ──────────────────────────────────────────────────────
+#
+# These are module functions rather than LibraryIndex methods because the sweep
+# writer owns its own raw connection to the same file - it is the one stage
+# allowed to write - and it needs exactly this behaviour without opening a
+# second LibraryIndex around the same database.
+
+
+def meta_get(connection: sqlite3.Connection, key: str) -> str:
+    try:
+        row = connection.execute(
+            "SELECT value FROM index_meta WHERE key = ?", (key,)
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    return str(row[0]) if row is not None else ""
+
+
+def meta_set(connection: sqlite3.Connection, key: str, value: str) -> None:
+    connection.execute(
+        "INSERT INTO index_meta (key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def fts_map_ready(connection: sqlite3.Connection) -> bool:
+    """Whether every existing FTS row can be found by rowid."""
+    return meta_get(connection, FTS_MAP_KEY) == "1"
+
+
+def build_fts_map(connection: sqlite3.Connection,
+                  progress: Callable[[str], None] | None = None) -> dict[str, int]:
+    """Populate the rowid map for rows written before it existed.
+
+    One pass over each FTS table, once in the life of an index.  Everything
+    written afterwards records its rowids as it goes, so this never runs again -
+    which is the whole point of paying for it deliberately, here, instead of
+    accidentally, one full scan per book, forever.
+    """
+    def say(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
+    cursor = connection.cursor()
+    cursor.execute("DELETE FROM fts_rowid")
+
+    say("Mapping the title index…")
+    cursor.execute(
+        "INSERT INTO fts_rowid (book_id, meta_row)"
+        " SELECT book_id, rowid FROM books_fts WHERE book_id IS NOT NULL"
+        " ON CONFLICT(book_id) DO UPDATE SET meta_row = excluded.meta_row"
+    )
+
+    say("Mapping the full-text index — one pass, only ever once…")
+    cursor.execute(
+        "INSERT INTO fts_rowid (book_id, content_row)"
+        " SELECT book_id, rowid FROM content_fts WHERE book_id IS NOT NULL"
+        " ON CONFLICT(book_id) DO UPDATE SET content_row = excluded.content_row"
+    )
+    content_rows = int(cursor.execute("SELECT count(*) FROM content_fts").fetchone()[0] or 0)
+
+    mapped = int(cursor.execute("SELECT count(*) FROM fts_rowid").fetchone()[0] or 0)
+    pointed_at = int(cursor.execute(
+        "SELECT count(*) FROM fts_rowid WHERE content_row IS NOT NULL").fetchone()[0] or 0)
+    # More full-text rows than books means an earlier sweep left duplicates
+    # behind.  The map can only point at one of them, so say so rather than let
+    # a stale body quietly go on answering searches.
+    orphans = max(0, content_rows - pointed_at)
+
+    meta_set(connection, FTS_MAP_KEY, "1")
+    connection.commit()
+    say(f"Full-text map built: {mapped:,} books"
+        + (f", {orphans:,} duplicate rows found" if orphans else ""))
+    return {"mapped": mapped, "content_rows": content_rows, "orphans": orphans}
+
+
+def drop_fts_rows(cursor: sqlite3.Cursor, book_ids: Sequence[int]) -> None:
+    """Remove the FTS entries for *book_ids*, by rowid wherever we can.
+
+    Falls back to the scanning delete only for books the map has never seen,
+    which after :func:`build_fts_map` means none.  The fallback stays because a
+    fast-but-wrong delete would leave stale text answering searches, and that is
+    a worse failure than a slow one.
+    """
+    if not book_ids:
+        return
+    for chunk in _chunked(list(book_ids), 400):
+        marks = ",".join("?" * len(chunk))
+        mapped: dict[int, tuple[Any, Any]] = {
+            int(row[0]): (row[1], row[2])
+            for row in cursor.execute(
+                f"SELECT book_id, meta_row, content_row FROM fts_rowid"
+                f" WHERE book_id IN ({marks})", chunk
+            ).fetchall()
+        }
+        unmapped = [book_id for book_id in chunk if book_id not in mapped]
+        meta_rows = [value[0] for value in mapped.values() if value[0] is not None]
+        content_rows = [value[1] for value in mapped.values() if value[1] is not None]
+
+        for table, rows in (("books_fts", meta_rows), ("content_fts", content_rows)):
+            for row_chunk in _chunked(rows, 400):
+                row_marks = ",".join("?" * len(row_chunk))
+                cursor.execute(f"DELETE FROM {table} WHERE rowid IN ({row_marks})", row_chunk)
+
+        if unmapped:
+            unmapped_marks = ",".join("?" * len(unmapped))
+            cursor.execute(
+                f"DELETE FROM books_fts   WHERE book_id IN ({unmapped_marks})", unmapped)
+            cursor.execute(
+                f"DELETE FROM content_fts WHERE book_id IN ({unmapped_marks})", unmapped)
+        cursor.execute(f"DELETE FROM fts_rowid WHERE book_id IN ({marks})", chunk)
 
 
 def default_index_path() -> Path:
@@ -450,8 +638,65 @@ class LibraryIndex:
         self.connection.execute("PRAGMA synchronous=NORMAL")
         self.connection.execute("PRAGMA temp_store=MEMORY")
         self.connection.execute("PRAGMA cache_size=-131072")  # 128 MB page cache
+        # Migration comes first, and must: SCHEMA builds an index over
+        # ``seen_gen``, and ``CREATE INDEX`` on a column that an older database
+        # does not have is a hard error - one that stopped Lumen from starting
+        # at all against a real 7.79 GB index written by the previous version.
+        self._migrate()
         self.connection.executescript(SCHEMA)
+        self._adopt_fresh_database()
         self.connection.commit()
+
+    def _migrate(self) -> None:
+        """Bring an index written by an older Lumen up to the current schema.
+
+        ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table alone,
+        so a database from before generation-marking keeps its old shape however
+        many times the schema script is run over it.  The column has to be added
+        by hand, before anything that depends on it.
+        """
+        existing = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'books'"
+        ).fetchone()
+        if existing is None:
+            return                      # a fresh database: SCHEMA builds it correctly
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(books)")}
+        if "seen_gen" not in columns:
+            self.connection.execute(
+                "ALTER TABLE books ADD COLUMN seen_gen INTEGER NOT NULL DEFAULT 0"
+            )
+            self.connection.commit()
+
+    def _adopt_fresh_database(self) -> None:
+        """A brand-new index is born with its rowid map already correct.
+
+        Building the map costs one pass over the whole full-text index, so it
+        must never be paid by a reader who has nothing to migrate.  An index
+        with no books has nothing to map, and everything written from here on
+        records its own rowids.
+        """
+        if self.fts_map_ready():
+            return
+        row = self.connection.execute("SELECT 1 FROM books LIMIT 1").fetchone()
+        if row is None:
+            self._meta_set(FTS_MAP_KEY, "1")
+
+    # ── the FTS rowid map ──────────────────────────────────────────────────
+
+    def fts_map_ready(self) -> bool:
+        """Whether every existing FTS row can be found by rowid."""
+        return fts_map_ready(self.connection)
+
+    def build_fts_map(self, progress: Callable[[str], None] | None = None) -> dict[str, int]:
+        """Map every existing FTS row to its book.  Once per index, ever."""
+        return build_fts_map(self.connection, progress)
+
+    def drop_fts_rows(self, cursor: sqlite3.Cursor, book_ids: Sequence[int]) -> None:
+        """Remove the FTS entries for *book_ids*, by rowid wherever we can."""
+        drop_fts_rows(cursor, book_ids)
+
+    def _meta_set(self, key: str, value: str) -> None:
+        meta_set(self.connection, key, value)
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -477,92 +722,168 @@ class LibraryIndex:
         cancelled: Callable[[], bool] | None = None,
         workers: int | None = None,
         with_text: bool = True,
+        config: Any = None,
     ) -> LibraryCounts:
-        """Index every book under *root*, reusing rows that have not changed."""
-        root_key = normalize_root(root)
-        root_path = Path(root).expanduser().resolve()
+        """Index every book under *root*, reusing rows that have not changed.
+
+        This is the blocking, callback-shaped face of the sweep, kept for the
+        headless callers and the tests.  The work itself is done by
+        :class:`~lumen_reader.turbo_scan.TurboScanner`, whose stages all run at
+        once; the ``walk`` / ``extract`` / ``done`` phases reported here are a
+        translation of its live telemetry, not separate passes.
+        """
+        from .turbo_scan import ScanConfig, TurboScanner
+
+        settings = config if config is not None else ScanConfig()
+        settings.with_text = with_text
+        settings.text_budget = self.text_budget
+        if workers is not None:
+            settings.processes = max(1, int(workers))
+
         stop = cancelled or (lambda: False)
+        root_key = normalize_root(root)
+        scanner = TurboScanner(self.path, root, settings)
+        scanner.start()
 
-        def report(phase: str, done: int = 0, total: int = 0, detail: str = "") -> None:
-            if progress is not None:
-                progress(ScanProgress(phase, done, total, detail))
-
-        # Phase 1 - walk.  Cheap even on a very large tree.
-        report("walk", detail=str(root_path))
-        found: dict[str, tuple[int, int, str]] = {}
-        for path_text, size, mtime_ns, suffix in walk_library(root_path):
+        emitted_extract = False
+        while True:
+            finished = scanner.wait(0.1)
             if stop():
-                return self.counts(root_key)
-            found[path_text] = (size, mtime_ns, suffix)
-            if len(found) % 500 == 0:
-                report("walk", len(found), 0, f"{len(found):,} books found")
-        report("walk", len(found), len(found), f"{len(found):,} books found")
+                scanner.cancel()
+            state = scanner.snapshot()
+            if progress is not None:
+                stale = state.books_found - state.books_unchanged
+                if not state.walk_complete:
+                    progress(ScanProgress("walk", state.books_found, 0,
+                                          f"{state.books_found:,} books found"))
+                elif stale > 0:
+                    emitted_extract = True
+                    done = state.books_indexed + state.books_failed
+                    progress(ScanProgress("extract", done, stale, f"{done:,} / {stale:,}"))
+            if finished:
+                break
 
-        # Phase 2 - diff against what is already indexed.
-        known: dict[str, tuple[int, int, int]] = {}
-        for row in self.connection.execute(
-            "SELECT path, size, mtime_ns, has_text FROM books WHERE root = ?", (root_key,)
-        ):
-            known[row["path"]] = (row["size"], row["mtime_ns"], row["has_text"])
+        state = scanner.snapshot()
+        if progress is not None:
+            if state.error:
+                progress(ScanProgress("error", detail=state.error))
+            else:
+                done = state.books_indexed + state.books_failed
+                detail = f"{done:,} indexed" if emitted_extract else "index already current"
+                progress(ScanProgress("done", done, max(done, state.books_found), detail))
+        return state.counts if state.counts is not None else self.counts(root_key)
 
-        want_text = with_text and self.text_budget > 0
-        stale: list[tuple[str, str, int]] = []
-        for path_text, (size, mtime_ns, suffix) in found.items():
-            previous = known.get(path_text)
-            if previous is not None:
-                same_file = previous[0] == size and previous[1] == mtime_ns
-                text_ok = previous[2] == 1 or not want_text
-                if same_file and text_ok:
-                    continue
-            stale.append((path_text, suffix, self.text_budget if want_text else 0))
+    # ── generation marking ─────────────────────────────────────────────────
+    #
+    # Finding the books that have left the shelf used to need the whole indexed
+    # path set and the whole found path set in memory at the same time.  Each
+    # sweep now stamps the rows it saw with its own number, and anything still
+    # carrying an older number is gone from disk - which costs one indexed
+    # DELETE instead of two sets the size of the library.
 
-        vanished = [path for path in known if path not in found]
-        if vanished:
-            self._forget(vanished)
+    def next_generation(self, root: str | Path) -> int:
+        """Reserve a generation number for a sweep about to start."""
+        root_key = root if isinstance(root, str) and os.path.normcase(root) == root else normalize_root(root)
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(seen_gen), 0) FROM books WHERE root = ?", (root_key,)
+        ).fetchone()
+        return int(row[0] or 0) + 1
 
+    def prune_generation(self, root: str | Path, generation: int) -> int:
+        """Drop every row under *root* that the sweep numbered *generation* missed."""
+        root_key = root if isinstance(root, str) and os.path.normcase(root) == root else normalize_root(root)
+        stale = [row[0] for row in self.connection.execute(
+            "SELECT id FROM books WHERE root = ? AND seen_gen <> ?", (root_key, generation)
+        )]
         if not stale:
-            report("done", len(found), len(found), "index already current")
-            return self.counts(root_key)
+            return 0
+        cursor = self.connection.cursor()
+        for chunk in _chunked(stale, 400):
+            marks = ",".join("?" * len(chunk))
+            self.drop_fts_rows(cursor, chunk)
+            cursor.execute(f"DELETE FROM books       WHERE id      IN ({marks})", chunk)
+        self.connection.commit()
+        return len(stale)
 
-        # Phase 3 - parallel extraction across every core.
-        total = len(stale)
-        report("extract", 0, total, f"0 / {total:,}")
-        max_workers = workers if workers is not None else max(1, (os.cpu_count() or 4))
-        max_workers = min(max_workers, 61, total)  # Windows caps wait handles at 61
+    def record_scan(
+        self,
+        root: str | Path,
+        *,
+        generation: int,
+        seconds: float,
+        found: int,
+        indexed: int,
+        skipped: int,
+        failed: int,
+        cancelled: bool = False,
+    ) -> None:
+        """Remember how the sweep went, for the configuration window to show."""
+        root_key = root if isinstance(root, str) and os.path.normcase(root) == root else normalize_root(root)
+        self.connection.execute(
+            "INSERT INTO scan_runs (root, generation, finished_at, seconds, found, indexed,"
+            " skipped, failed, cancelled) VALUES (?,?,?,?,?,?,?,?,?)",
+            (root_key, generation, time.time(), seconds, found, indexed, skipped, failed,
+             1 if cancelled else 0),
+        )
+        self.connection.execute(
+            "DELETE FROM scan_runs WHERE root = ? AND id NOT IN ("
+            "  SELECT id FROM scan_runs WHERE root = ? ORDER BY finished_at DESC LIMIT 40)",
+            (root_key, root_key),
+        )
+        self.connection.commit()
 
-        done = 0
-        batch: list[dict[str, Any]] = []
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(extract_book, job): job[0] for job in stale}
-            for future in as_completed(futures):
-                if stop():
-                    for pending in futures:
-                        pending.cancel()
-                    break
-                try:
-                    record = future.result()
-                except Exception as exception:
-                    record = {
-                        "path": futures[future], "ok": False,
-                        "error": f"{type(exception).__name__}: {exception}"[:400],
-                        "title": Path(futures[future]).stem, "author": "", "publisher": "",
-                        "language": "", "subjects": "", "description": "", "pages": 0, "body": "",
-                    }
-                size, mtime_ns, suffix = found[record["path"]]
-                record["root"] = root_key
-                record["size"] = size
-                record["mtime_ns"] = mtime_ns
-                record["ext"] = suffix
-                batch.append(record)
-                done += 1
-                if len(batch) >= 400:
-                    self._write(batch)
-                    batch.clear()
-                    report("extract", done, total, f"{done:,} / {total:,}")
-        if batch:
-            self._write(batch)
-        report("done", done, total, f"{done:,} indexed")
-        return self.counts(root_key)
+    def last_scan(self, root: str | Path) -> dict[str, Any] | None:
+        root_key = normalize_root(root)
+        row = self.connection.execute(
+            "SELECT * FROM scan_runs WHERE root = ? ORDER BY finished_at DESC LIMIT 1", (root_key,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    # ── maintenance ────────────────────────────────────────────────────────
+
+    def roots(self) -> list[tuple[str, int]]:
+        """Every library this index knows about, with its book count."""
+        return [(row[0], row[1]) for row in self.connection.execute(
+            "SELECT root, COUNT(*) FROM books GROUP BY root ORDER BY COUNT(*) DESC"
+        )]
+
+    def clear_root(self, root: str | Path) -> int:
+        """Forget one library entirely, so the next sweep starts from nothing."""
+        root_key = normalize_root(root)
+        paths = [row[0] for row in self.connection.execute(
+            "SELECT path FROM books WHERE root = ?", (root_key,)
+        )]
+        self._forget(paths)
+        self.connection.execute("DELETE FROM scan_runs WHERE root = ?", (root_key,))
+        self.connection.commit()
+        return len(paths)
+
+    def optimize(self) -> None:
+        """Compact the FTS indexes and the database file itself.
+
+        ``VACUUM`` cannot run inside a transaction, and sqlite3 opens one
+        implicitly for anything that writes, so the isolation level is dropped
+        for the duration rather than letting the call fail.
+        """
+        self.connection.execute("INSERT INTO books_fts(books_fts) VALUES('optimize')")
+        self.connection.execute("INSERT INTO content_fts(content_fts) VALUES('optimize')")
+        self.connection.commit()
+        previous = self.connection.isolation_level
+        try:
+            self.connection.isolation_level = None
+            self.connection.execute("VACUUM")
+            self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            self.connection.isolation_level = previous
+
+    def database_bytes(self) -> int:
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                total += (self.path.parent / f"{self.path.name}{suffix}").stat().st_size
+            except OSError:
+                continue
+        return total
 
     def _forget(self, paths: Sequence[str]) -> None:
         cursor = self.connection.cursor()
@@ -574,54 +895,8 @@ class LibraryIndex:
             if not ids:
                 continue
             id_marks = ",".join("?" * len(ids))
-            cursor.execute(f"DELETE FROM books_fts   WHERE book_id IN ({id_marks})", ids)
-            cursor.execute(f"DELETE FROM content_fts WHERE book_id IN ({id_marks})", ids)
+            self.drop_fts_rows(cursor, ids)
             cursor.execute(f"DELETE FROM books       WHERE id      IN ({id_marks})", ids)
-        self.connection.commit()
-
-    def _write(self, records: Iterable[dict[str, Any]]) -> None:
-        cursor = self.connection.cursor()
-        for record in records:
-            path_text = record["path"]
-            name = os.path.basename(path_text)
-            has_text = 1 if record.get("body") else 0
-            existing = cursor.execute("SELECT id FROM books WHERE path = ?", (path_text,)).fetchone()
-            if existing is not None:
-                book_id = existing[0]
-                cursor.execute("DELETE FROM books_fts   WHERE book_id = ?", (book_id,))
-                cursor.execute("DELETE FROM content_fts WHERE book_id = ?", (book_id,))
-                cursor.execute(
-                    """UPDATE books SET root=?, name=?, ext=?, size=?, mtime_ns=?, title=?,
-                       author=?, publisher=?, language=?, subjects=?, description=?, pages=?,
-                       has_text=?, ok=?, error=? WHERE id=?""",
-                    (record["root"], name, record["ext"], record["size"], record["mtime_ns"],
-                     record["title"], record["author"], record["publisher"], record["language"],
-                     record["subjects"], record["description"], record["pages"], has_text,
-                     1 if record.get("ok", True) else 0, record.get("error", ""), book_id),
-                )
-            else:
-                cursor.execute(
-                    """INSERT INTO books (root, path, name, ext, size, mtime_ns, title, author,
-                       publisher, language, subjects, description, pages, has_text, ok, error)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (record["root"], path_text, name, record["ext"], record["size"],
-                     record["mtime_ns"], record["title"], record["author"], record["publisher"],
-                     record["language"], record["subjects"], record["description"],
-                     record["pages"], has_text, 1 if record.get("ok", True) else 0,
-                     record.get("error", "")),
-                )
-                book_id = cursor.lastrowid
-            cursor.execute(
-                "INSERT INTO books_fts (title, author, name, subjects, publisher, book_id)"
-                " VALUES (?,?,?,?,?,?)",
-                (record["title"], record["author"], name, record["subjects"],
-                 record["publisher"], book_id),
-            )
-            if has_text:
-                cursor.execute(
-                    "INSERT INTO content_fts (body, book_id) VALUES (?,?)",
-                    (record["body"], book_id),
-                )
         self.connection.commit()
 
     # ── reading ────────────────────────────────────────────────────────────

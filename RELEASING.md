@@ -12,6 +12,11 @@ registration:
 
 Everything below explains what that command does and why each piece is there.
 
+For what is *in* the release, see [CHANGELOG.md](CHANGELOG.md). For the two
+subsystems with their own design documents, see
+[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md) and
+[SpeedReadingToolInLumenReader.md](SpeedReadingToolInLumenReader.md).
+
 ---
 
 ## The one-liners
@@ -75,12 +80,27 @@ Freezes `lumen_main.py` (the root shim around `lumen_reader/launcher.py` —
 PyInstaller runs its entry script as `__main__` with no package context, so
 a relative import there would raise on the user's machine) with PyInstaller
 `--onedir --windowed`,
-stages the frozen tree plus the PowerShell registrars, the icon, the licence
-and `preserved_user_state.json` into `dist/payload/`, and zips that.
+stages the frozen tree plus the PowerShell registrars, the icon, `LICENSE`,
+`THIRD_PARTY_NOTICES.md` and `preserved_user_state.json` into `dist/payload/`,
+and zips that. Those two documents ship *inside the installation* because a
+user who never sees this repository still has to be able to read them; the
+rest of the documentation set lives with the source.
 
-**`--onedir` is mandatory.** Lumen renders pages in QtWebEngine, whose helper
-process `QtWebEngineProcess.exe` cannot be relaunched reliably out of a
-`--onefile` temp extraction.
+**`--onedir` is mandatory**, for two independent reasons.
+
+*QtWebEngine.* Lumen renders pages in QtWebEngine, whose helper process
+`QtWebEngineProcess.exe` cannot be relaunched reliably out of a `--onefile`
+temp extraction.
+
+*The extractor fleet.* The Turbo Sweep runs its extractors as real
+`multiprocessing` processes with the `spawn` start method. On Windows a
+spawned child **re-executes `Lumen.exe`** with `--multiprocessing-fork` in its
+argv, so the frozen entry path is walked once per worker.
+`multiprocessing.freeze_support()` is what turns that re-execution into a
+worker instead of a second reader window, and
+`lumen_reader/launcher.py` deliberately ignores an `argv[1]` that starts with
+`-` so a worker is never mistaken for a book being opened. A `--onefile`
+build would re-extract the whole bundle for every worker.
 
 `pkg.zip`'s contents *are* the installed directory, one for one. The build
 then **verifies** the archive: `Lumen.exe`, the `_internal/` tree, the icon,
@@ -244,6 +264,14 @@ Reading positions, bookmarks, notes and tags live in
 uninstall** unless the user explicitly ticks the box. Books are never touched,
 ever.
 
+`library-index.db` lives in that same folder and is covered by the same
+`appdata_dirs` entry, but it is in a different category from everything else
+there: it is a **rebuildable cache**, not user data. Deleting it costs one
+sweep. Nothing in it cannot be reconstructed from the books on disk, which is
+why it is safe for a release to change its schema — `LibraryIndex._migrate`
+adopts an older database where it can and starts a fresh one where it cannot,
+and the first sweep after an upgrade rebuilds what it needs.
+
 ---
 
 ## Requirements
@@ -258,12 +286,19 @@ ever.
 so a missing `PyMuPDF` fails in two seconds with the exact `pip` line to run,
 rather than three minutes into an analysis pass.
 
+The library engine adds no third-party dependency. `turbo_scan`, `accel`,
+`scan_monitor` and `settings_dialog` use only the standard library, `ctypes`
+and PySide6, and the index is SQLite through Python's own `sqlite3` with FTS5.
+Hardware detection *shells out* to `nvidia-smi` and PowerShell when they are
+present and degrades to "not on this machine" when they are not, so a build
+host with no GPU stack needs nothing extra.
+
 ---
 
 ## Verifying a release
 
 ```powershell
-cd Lumen_Release_v1.3.0
+cd Lumen_Release_v<version>
 Get-FileHash Installer.exe -Algorithm SHA256      # compare against SHA256SUMS.txt
 Get-Content RELEASE_MANIFEST.json | ConvertFrom-Json
 ```
@@ -271,3 +306,29 @@ Get-Content RELEASE_MANIFEST.json | ConvertFrom-Json
 `RELEASE_MANIFEST.json` records the version, the commit, the build host, the
 total size, a digest for every file, and the file types the installer will
 offer to register.
+
+---
+
+## Before you tag
+
+The build enforces the mechanical half of a release. This is the half it
+cannot.
+
+1. **`python -m pytest` is green.** All of it, not the subset you were working
+   on. The release scheme, the sweep pipeline, the index and the monitor all
+   have tests that exist precisely to fail at this moment.
+2. **[CHANGELOG.md](CHANGELOG.md) has an entry for this version**, moved out
+   of *Unreleased*, describing what a user will notice.
+3. **The tag message matches what the tag contains.** A tag whose message
+   describes work that is not in it cannot be corrected afterwards — history
+   is never rewritten here — so it has to be right the first time. The
+   *Notes on version history* section of the changelog records what happens
+   when it is not.
+4. **The docs describe the build you are shipping.** `README.md` for the
+   feature set and the keyboard table, `LibraryEngineInLumenReader.md` for the
+   sweep and the index, `SpeedReadingToolInLumenReader.md` for RSVP, and
+   `THIRD_PARTY_NOTICES.md` for the dependency inventory and its version line.
+5. **Anything a document promises in the present tense, the build does.** A
+   setting that is a reserved seam is documented as a seam. This is the same
+   rule the Acceleration tab follows when it refuses to claim a GPU is doing
+   work the CPU is doing.

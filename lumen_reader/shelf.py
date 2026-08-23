@@ -29,7 +29,6 @@ from PySide6.QtCore import (
     QRect,
     QSize,
     Qt,
-    QThread,
     QTimer,
     Signal,
 )
@@ -49,7 +48,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .library_index import BookRow, LibraryCounts, LibraryIndex, ScanProgress
+from .library_index import BookRow, LibraryCounts, LibraryIndex
+from .turbo_scan import ScanSnapshot
 
 PAGE_SIZE = 400
 SEARCH_DEBOUNCE_MS = 140
@@ -157,6 +157,7 @@ class LibraryModel(QAbstractListModel):
         # it with a LibraryIndex kills the view with 'object is not callable'.
         self.library = index
         self.root = root
+        self.page_size = PAGE_SIZE
         self._rows: list[BookRow] = []
         self._total = 0
         self._query = ""
@@ -205,7 +206,7 @@ class LibraryModel(QAbstractListModel):
             )
             page = self.library.search(
                 self.root, self._query, mode=self._mode,
-                limit=PAGE_SIZE, offset=0, extensions=self._extensions,
+                limit=self.page_size, offset=0, extensions=self._extensions,
             )
         except Exception:
             self._total, page = 0, []
@@ -233,7 +234,7 @@ class LibraryModel(QAbstractListModel):
         try:
             more = self.library.search(
                 self.root, self._query, mode=self._mode,
-                limit=PAGE_SIZE, offset=len(self._rows), extensions=self._extensions,
+                limit=self.page_size, offset=len(self._rows), extensions=self._extensions,
             )
         except Exception:
             return
@@ -445,42 +446,6 @@ class BookListView(QListView):
         super().keyPressEvent(event)
 
 
-# ──────────────────────────── background indexer ──────────────────────────
-
-
-class IndexWorker(QThread):
-    """Runs a full parallel scan off the UI thread."""
-
-    progressed = Signal(object)   # ScanProgress
-    finished_scan = Signal(object)  # LibraryCounts
-
-    def __init__(self, database: Path, root: str, text_budget: int, with_text: bool = True):
-        super().__init__()
-        self.database = database
-        self.root = root
-        self.text_budget = text_budget
-        self.with_text = with_text
-        self._cancel = False
-
-    def cancel(self) -> None:
-        self._cancel = True
-
-    def run(self) -> None:
-        # A private connection: WAL lets this write while the shelf keeps reading.
-        counts = LibraryCounts()
-        try:
-            with LibraryIndex(self.database, text_budget=self.text_budget) as index:
-                counts = index.scan(
-                    self.root,
-                    progress=self.progressed.emit,
-                    cancelled=lambda: self._cancel,
-                    with_text=self.with_text,
-                )
-        except Exception as exception:
-            self.progressed.emit(ScanProgress("error", detail=str(exception)[:300]))
-        self.finished_scan.emit(counts)
-
-
 # ────────────────────────────────  shelf  ─────────────────────────────────
 
 
@@ -490,6 +455,7 @@ class LibraryShelf(QWidget):
     browse_requested = Signal()
     book_requested = Signal(str)
     rescan_requested = Signal()
+    configure_requested = Signal()
 
     def __init__(self, index: LibraryIndex, root: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -506,6 +472,30 @@ class LibraryShelf(QWidget):
         heading.setObjectName("heroHeading")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(heading)
+
+        # ── which folder this actually is ──────────────────────────────────
+        # The shelf used to show a count with no idea where the books came
+        # from, so a scan of the wrong folder looked exactly like a scan that
+        # found nothing.  The path is now always on screen, one click from
+        # being changed.
+        root_row = QHBoxLayout()
+        root_row.setSpacing(8)
+        root_caption = QLabel("LIBRARY FOLDER")
+        root_caption.setObjectName("rootCaption")
+        root_row.addWidget(root_caption)
+        self.root_label = QLabel(root)
+        self.root_label.setObjectName("rootPath")
+        self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root_row.addWidget(self.root_label, 1)
+        self.configure_button = QPushButton("⚙  Change folder && settings")
+        self.configure_button.setObjectName("smallButton")
+        self.configure_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.configure_button.setToolTip(
+            "Choose the folder your books are in, and every other Lumen setting"
+        )
+        self.configure_button.clicked.connect(self.configure_requested)
+        root_row.addWidget(self.configure_button)
+        root_layout.addLayout(root_row)
 
         # ── the count banner ───────────────────────────────────────────────
         self.counter_bar = QWidget()
@@ -594,9 +584,12 @@ class LibraryShelf(QWidget):
         self.open_button.clicked.connect(self.browse_requested)
         footer.addWidget(self.open_button)
 
-        self.rescan_button = QPushButton("Rescan library")
+        self.rescan_button = QPushButton("⟳  Sweep this folder now")
         self.rescan_button.setObjectName("smallButton")
         self.rescan_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rescan_button.setToolTip(
+            "Read every book under the library folder, one ultra-priority process per core"
+        )
         self.rescan_button.clicked.connect(self.rescan_requested)
         footer.addWidget(self.rescan_button)
         root_layout.addLayout(footer)
@@ -686,9 +679,18 @@ class LibraryShelf(QWidget):
 
     def set_root(self, root: str) -> None:
         self.root = root
+        self.root_label.setText(root)
         self.delegate.set_root(root)
         self.model.set_root(root)
         self.refresh_counts()
+
+    def apply_search_settings(self, settings: dict) -> None:
+        """Take the search preferences from the configuration window."""
+        self.page_size = max(50, int(settings.get("page_size", PAGE_SIZE)))
+        self._debounce.setInterval(max(0, int(settings.get("debounce_ms", SEARCH_DEBOUNCE_MS))))
+        mode = str(settings.get("default_mode", "meta"))
+        if mode in {"meta", "content", "all"} and not self.search.text().strip():
+            self._set_mode(mode)
 
     def set_books(self, books: list[dict[str, str]]) -> None:
         """Compatibility path: show recents until the index has been built."""
@@ -718,13 +720,15 @@ class LibraryShelf(QWidget):
         self.model.set_query(self.search.text())
 
     def _set_mode(self, mode: str) -> None:
-        self.mode_meta.setChecked(mode == "meta")
-        self.mode_content.setChecked(mode == "content")
-        self.search.setPlaceholderText(
-            "Search inside every book — topics, phrases, ideas…"
-            if mode == "content"
-            else "Search titles, authors, filenames…   (try  ext:pdf  ·  \"exact phrase\")"
-        )
+        # "all" is reachable from the configuration window rather than from the
+        # chips, and it *is* both chips at once - so it lights both rather than
+        # leaving the pair looking switched off.
+        self.mode_meta.setChecked(mode in {"meta", "all"})
+        self.mode_content.setChecked(mode in {"content", "all"})
+        self.search.setPlaceholderText({
+            "content": "Search inside every book — topics, phrases, ideas…",
+            "all": "Search titles and the text inside every book…",
+        }.get(mode, "Search titles, authors, filenames…   (try  ext:pdf  ·  \"exact phrase\")"))
         self.model.set_mode(mode)
 
     def _set_extensions(self, extensions: list[str]) -> None:
@@ -747,6 +751,12 @@ class LibraryShelf(QWidget):
             self._activate(self.model.index(0, 0))
 
     def _on_counts_changed(self, shown: int, total: int) -> None:
+        if not total and not self.search.text().strip():
+            # An empty shelf is the exact symptom of a library folder pointing
+            # somewhere with no books in it, so say so instead of showing a
+            # confident "0 of 0" that looks like a working, empty library.
+            self.status.setText("nothing indexed yet — check the library folder, then sweep")
+            return
         scope = "matching" if self.search.text().strip() else "in library"
         self.status.setText(f"showing {shown:,} of {total:,} {scope}")
 
@@ -764,29 +774,48 @@ class LibraryShelf(QWidget):
 
     # ── indexing feedback ──────────────────────────────────────────────────
 
-    def show_progress(self, update: ScanProgress) -> None:
+    def show_sweep(self, state: ScanSnapshot) -> None:
+        """Mirror the sweep in the shelf footer while the monitor is closed.
+
+        This is a summary, not the report: the full per-core picture lives in the
+        sweep monitor.  What matters here is that the shelf never again shows a
+        bar that looks identical whether the sweep read ten thousand books or
+        swept an empty folder - the numbers are always on it.
+        """
         self.progress.show()
         self.rescan_button.setEnabled(False)
-        if update.phase == "walk":
+        if state.phase == "error":
+            self.progress.setRange(0, 1)
+            self.progress.setValue(1)
+            self.progress.setFormat(f"Sweep failed — {state.error}")
+            return
+        if not state.walk_complete:
             self.progress.setRange(0, 0)
-            self.progress.setFormat(f"Scanning library — {update.detail}")
-        elif update.phase == "extract":
-            self.progress.setRange(0, max(1, update.total))
-            self.progress.setValue(update.done)
-            self.progress.setFormat(f"Indexing %v of %m books  ({update.detail})")
-        elif update.phase == "error":
-            self.progress.setRange(0, 1)
-            self.progress.setValue(1)
-            self.progress.setFormat(f"Indexing problem: {update.detail}")
-        else:
-            self.progress.setRange(0, 1)
-            self.progress.setValue(1)
-            self.progress.setFormat(f"Library indexed — {update.detail}")
+            self.progress.setFormat(
+                f"Sweeping {state.dirs_swept:,} folders — {state.books_found:,} books found, "
+                f"{state.books_indexed:,} read on {state.active_workers} of "
+                f"{state.processes} cores"
+            )
+            return
+        stale = state.books_found - state.books_unchanged
+        settled = state.books_indexed + state.books_failed
+        if state.running and stale > 0:
+            self.progress.setRange(0, stale)
+            self.progress.setValue(settled)
+            self.progress.setFormat("Reading %v of %m books  ·  " + f"{state.books_per_second:,.0f}/s")
+            return
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1)
+        total = state.counts.total if state.counts is not None else state.books_found
+        self.progress.setFormat(
+            f"Sweep {'stopped' if state.phase == 'cancelled' else 'complete'} — "
+            f"{total:,} books indexed  ·  {state.books_indexed:,} newly read"
+        )
 
-    def finish_progress(self) -> None:
+    def finish_sweep(self) -> None:
         self.rescan_button.setEnabled(True)
         self.refresh_counts()
-        QTimer.singleShot(4000, self.progress.hide)
+        QTimer.singleShot(8000, self.progress.hide)
 
     # ── theming ────────────────────────────────────────────────────────────
 
@@ -803,6 +832,10 @@ class LibraryShelf(QWidget):
             #statCaption {{ color: {colors['muted']}; font-size: 10px; font-weight: 750;
                             letter-spacing: 2px; }}
             #shelfStatus {{ color: {colors['muted']}; font-size: 11px; }}
+            #rootCaption {{ color: {colors['muted']}; font-size: 9px; font-weight: 800;
+                            letter-spacing: 1.6px; }}
+            #rootPath {{ color: {colors['accent']}; font-size: 12px; font-weight: 750;
+                         font-family: Consolas, 'Courier New', monospace; }}
             #shelfSearch {{ color: {colors['fg']}; background: {colors['panel']};
                             border: 1px solid {colors['line']}; border-radius: 10px;
                             padding: 11px 13px; font-size: 14px; }}

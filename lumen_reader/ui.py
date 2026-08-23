@@ -67,7 +67,10 @@ from .marks import MARKS_FILENAME, MarksStore, ReadingMark
 from .models import Bookmark, SearchResult, TocEntry
 from .pdf_book import PdfBook, PdfError, PdfPasswordRequired
 from .library_index import DEFAULT_TEXT_BUDGET, LibraryIndex, default_index_path, normalize_root
-from .shelf import LibraryShelf, IndexWorker
+from .scan_monitor import ScanMonitorDialog
+from .settings_dialog import ConfigurationDialog
+from .shelf import LibraryShelf
+from .turbo_scan import ScanConfig, TurboScanner
 from .storage import ReaderStore
 from .speed_reader import (
     SpeedReaderDialog,
@@ -1583,7 +1586,10 @@ class ReaderWindow(QMainWindow):
         self.store = store
         self.library_root = normalize_root(library_root or Path.cwd())
         self.library_index = library_index or LibraryIndex(default_index_path())
-        self._index_worker: IndexWorker | None = None
+        self._scanner: TurboScanner | None = None
+        self._monitor: ScanMonitorDialog | None = None
+        self._sweep_timer: QTimer | None = None
+        self.theme_colors: dict[str, str] = {}
         self.marks_store = marks_store or MarksStore(Path.cwd() / MARKS_FILENAME)
         self.book: EpubBook | PdfBook | None = None
         self.chapter_index = 0
@@ -1778,6 +1784,16 @@ class ReaderWindow(QMainWindow):
         self.speed_reader_button.hide()
         header_layout.addWidget(self.speed_reader_button)
 
+        self.configure_button = QPushButton("⚙  Configuration")
+        self.configure_button.setObjectName("toolButton")
+        self.configure_button.setToolTip(
+            "The library folder, the sweep engine, the index, search and reading — "
+            "every Lumen setting in one window (Ctrl+,)"
+        )
+        self.configure_button.setAccessibleName("Open Lumen configuration")
+        self.configure_button.clicked.connect(self.show_configuration)
+        header_layout.addWidget(self.configure_button)
+
         self.definer_button = QPushButton("◇  Definer")
         self.definer_button.setObjectName("toolButton")
         self.definer_button.setToolTip(
@@ -1810,6 +1826,8 @@ class ReaderWindow(QMainWindow):
         self.welcome.browse_requested.connect(self.browse_for_book)
         self.welcome.book_requested.connect(self.open_book)
         self.welcome.rescan_requested.connect(self.rescan_library)
+        self.welcome.configure_requested.connect(self.show_configuration)
+        self.welcome.apply_search_settings(dict(self.store.data.get("search") or {}))
         # The shelf is added directly - never inside a QScrollArea.  A scroll
         # area would stretch the list to its full content height, materialising
         # every row and undoing the virtualization that makes a huge library
@@ -2010,6 +2028,8 @@ class ReaderWindow(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Open, self, activated=self.browse_for_book)
         QShortcut(QKeySequence.StandardKey.Find, self, activated=self.focus_search)
         QShortcut(QKeySequence("Ctrl+Shift+R"), self, activated=self.show_speed_reader)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=self.show_configuration)
+        QShortcut(QKeySequence("F5"), self, activated=self.rescan_library)
         QShortcut(QKeySequence("Ctrl+B"), self, activated=self.request_mark_position)
         QShortcut(QKeySequence("Ctrl+Shift+M"), self, activated=self.show_all_marks)
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.return_to_library)
@@ -2022,29 +2042,141 @@ class ReaderWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+-"), self, activated=lambda: self._change_font_size(-1))
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._dismiss_definition)
 
-    def rescan_library(self, with_text: bool = True) -> None:
-        """Re-index the datalake on a worker thread, across every core."""
-        if self._index_worker is not None and self._index_worker.isRunning():
-            return
-        budget = int(self.store.data.get("text_budget", DEFAULT_TEXT_BUDGET))
-        worker = IndexWorker(self.library_index.path, self.library_root, budget, with_text)
-        worker.progressed.connect(self.welcome.show_progress)
-        worker.finished_scan.connect(lambda _counts: self.welcome.finish_progress())
-        worker.finished.connect(self._clear_index_worker)
-        self._index_worker = worker
-        worker.start()
+    # ─────────────────────────── the library sweep ─────────────────────────
 
-    def _clear_index_worker(self) -> None:
-        self._index_worker = None
+    def scan_config(self) -> ScanConfig:
+        """The sweep settings as the configuration window last left them."""
+        stored = self.store.data.get("scan")
+        config = ScanConfig.from_mapping(stored)
+        if not isinstance(stored, dict) or "text_budget" not in stored:
+            # Nothing configured yet.  The text budget lived at the top level
+            # long before this window existed, so an upgrading reader keeps the
+            # value they already had rather than being silently reset.
+            config.text_budget = int(self.store.data.get("text_budget", DEFAULT_TEXT_BUDGET))
+        return config
+
+    def rescan_library(self, with_text: bool | None = None) -> None:
+        """Sweep the library folder with the full fleet, and show it happening.
+
+        Every path out of here is visible.  A sweep that is already running says
+        so; a library folder that does not exist says so and offers to fix
+        itself; a sweep that starts opens the monitor.  The one thing that can
+        no longer happen is the button appearing to do nothing.
+        """
+        if self._scanner is not None and self._scanner.is_running():
+            if self._monitor is not None:
+                self._monitor.show()
+                self._monitor.raise_()
+                self._monitor.activateWindow()
+            return
+
+        root = Path(self.library_root)
+        if not root.is_dir():
+            answer = QMessageBox.question(
+                self, "Where are your books?",
+                f"Lumen's library folder is set to:\n\n{root}\n\n"
+                f"That folder does not exist, so a sweep would find nothing.\n\n"
+                f"Open Configuration to choose the right folder?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.show_configuration()
+            return
+
+        config = self.scan_config()
+        if with_text is not None:
+            config.with_text = bool(with_text)
+
+        scanner = TurboScanner(self.library_index.path, self.library_root, config)
+        self._scanner = scanner
+        scanner.start()
+
+        monitor = ScanMonitorDialog(scanner, self, self.theme_colors or None)
+        monitor.finished_scan.connect(self._sweep_finished)
+        self._monitor = monitor
+        monitor.show()
+
+        # The shelf footer mirrors the sweep too, so closing the monitor does not
+        # hide the fact that the fleet is still working.
+        timer = QTimer(self)
+        timer.setInterval(400)
+        timer.timeout.connect(self._poll_sweep)
+        self._sweep_timer = timer
+        timer.start()
+        self._poll_sweep()
+
+    def _poll_sweep(self) -> None:
+        scanner = self._scanner
+        if scanner is None:
+            return
+        state = scanner.snapshot()
+        self.welcome.show_sweep(state)
+        if not state.running:
+            self._sweep_finished(state)
+
+    def _sweep_finished(self, state: object) -> None:
+        if self._sweep_timer is not None:
+            self._sweep_timer.stop()
+            self._sweep_timer = None
+        self.welcome.show_sweep(state)
+        self.welcome.finish_sweep()
+        self._scanner = None
 
     def start_library_scan_if_needed(self) -> None:
-        """Index on first run, and whenever the shelf has nothing to show."""
+        """Sweep on first run, and whenever the shelf has nothing to show."""
+        if not self.scan_config().scan_on_startup:
+            return
         try:
             known = self.library_index.counts(self.library_root).total
         except Exception:
             known = 0
-        if known == 0:
+        if known == 0 and Path(self.library_root).is_dir():
             self.rescan_library()
+
+    # ────────────────────────── the configuration ──────────────────────────
+
+    def show_configuration(self) -> None:
+        """Open the settings window and apply whatever comes back."""
+        dialog = ConfigurationDialog(
+            self, self.store, self.library_index, self.library_root, self.theme_colors or None
+        )
+        dialog.index_changed.connect(self.welcome.refresh_counts)
+        wants_sweep: list[bool] = []
+        dialog.sweep_requested.connect(lambda: wants_sweep.append(True))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        chosen = normalize_root(dialog.chosen_root) if dialog.chosen_root else self.library_root
+        if chosen != self.library_root:
+            self.change_library_root(dialog.chosen_root)
+
+        self.welcome.apply_search_settings(dict(self.store.data.get("search") or {}))
+        theme = str(self.store.data.get("theme", "dark"))
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentText(THEME_LABELS.get(theme, "Night"))
+        self.theme_combo.blockSignals(False)
+        self._apply_app_theme()
+        self._rerender_current()
+        self.sidebar.setVisible(bool(self.store.data.get("sidebar_visible", True)))
+        self.welcome.refresh_counts()
+        if wants_sweep:
+            self.rescan_library()
+
+    def change_library_root(self, root: str | Path) -> None:
+        """Point Lumen at a different library folder, everywhere at once.
+
+        The marks file lives beside the books by design, so it travels with the
+        library rather than staying behind pointing at the old shelf.
+        """
+        resolved = Path(root).expanduser()
+        self.library_root = normalize_root(resolved)
+        self.welcome.set_root(self.library_root)
+        self.marks_store = MarksStore(resolved / MARKS_FILENAME)
+        self.marks_dialog.store = self.marks_store
+        self.store.relink_missing_books(resolved)
+        self._populate_bookmarks()
+        self._populate_welcome([])
 
     def _populate_welcome(self, initial_books: list[Path]) -> None:
         recent = list(self.store.data.get("recent_books", []))
@@ -3647,6 +3779,15 @@ class ReaderWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         if self._speed_target_active:
             self._cancel_speed_start_target()
+        # A sweep owns a fleet of real OS processes.  Leaving them running after
+        # the window is gone would strand a dozen high-priority orphans, so the
+        # scanner is told to stop and given a moment to shut its fleet down.
+        if self._sweep_timer is not None:
+            self._sweep_timer.stop()
+            self._sweep_timer = None
+        if self._scanner is not None and self._scanner.is_running():
+            self._scanner.cancel()
+            self._scanner.wait(15.0)
         self.save_state()
         self._cancel_dictionary_lookup()
         self._dictionary_executor.shutdown(wait=False, cancel_futures=True)
@@ -3674,7 +3815,12 @@ class ReaderWindow(QMainWindow):
             },
         }
         c = palettes.get(theme, palettes["dark"])
+        # Kept so the sweep monitor and the configuration window can be opened
+        # in the reader's palette rather than always in the dark one.
+        self.theme_colors = dict(c)
         self.welcome.apply_palette(c)
+        if self._monitor is not None:
+            self._monitor.apply_palette(c)
         self.setStyleSheet(f"""
             QMainWindow, QDialog, #appShell {{ background: {c['bg']}; color: {c['fg']}; }}
             QWidget {{ font-family: 'Segoe UI'; font-size: 13px; }}

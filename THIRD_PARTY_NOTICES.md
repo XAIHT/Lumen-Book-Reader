@@ -1,6 +1,6 @@
 # Third-party notices
 
-This document identifies the principal third-party runtime libraries, bundled lexical data, optional external components, online definition services, and test-only tools used by Lumen Book Reader 1.3.0.
+This document identifies the principal third-party runtime libraries, bundled lexical data, optional external components, online definition services, and test-only tools used by Lumen Book Reader. It describes the current source tree; the most recent tagged release is 1.3.0. Rebuild this inventory from the exact versions being shipped before any distribution.
 
 It is an attribution and dependency inventory, not a replacement for the complete upstream license texts or legal advice. Anyone redistributing Lumen or a packaged executable must review the exact dependency versions and satisfy every applicable license.
 
@@ -34,6 +34,19 @@ PyMuPDF and MuPDF are dual-licensed under the GNU Affero General Public License 
 - PyMuPDF licensing and copyright: <https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright>
 - GNU AGPL version 3: <https://www.gnu.org/licenses/agpl-3.0.html>
 - Artifex licensing: <https://artifex.com/licensing/>
+
+### SQLite and FTS5
+
+Lumen stores its library index in SQLite, through the `sqlite3` module of the Python standard library, and uses the FTS5 full-text extension for both the metadata index and the book-text index. SQLite is not vendored by this repository: Lumen uses whichever SQLite library the running Python interpreter was built against, which for the frozen Windows release is the one bundled with CPython.
+
+FTS5 is a standard extension included in CPython's SQLite builds; Lumen creates FTS5 virtual tables and calls the `bm25()` and `snippet()` auxiliary functions.
+
+SQLite source code is in the public domain. Distributors relying on a particular SQLite build should retain whatever notices accompany that build and confirm that FTS5 is compiled in.
+
+- SQLite: <https://sqlite.org/>
+- Copyright and public-domain dedication: <https://sqlite.org/copyright.html>
+- FTS5 documentation: <https://sqlite.org/fts5.html>
+- Python `sqlite3` module: <https://docs.python.org/3/library/sqlite3.html>
 
 ### Beautiful Soup
 
@@ -80,6 +93,16 @@ Tesseract is distributed under the Apache License 2.0. Trained-language data may
 - Project: <https://github.com/tesseract-ocr/tesseract>
 - License: <https://github.com/tesseract-ocr/tesseract/blob/main/LICENSE>
 - Language data: <https://github.com/tesseract-ocr/tessdata>
+
+### Hardware detection utilities
+
+To decide which extraction and search backend to use, Lumen probes the machine at startup on a background thread. Nothing here is bundled, and every probe degrades to a plain "not on this machine" answer when the component is absent.
+
+- **NVIDIA System Management Interface (`nvidia-smi`).** Invoked as a subprocess with a short timeout, and only when it is present on `PATH`, to read GPU names and memory. It ships with the NVIDIA display driver and is governed by NVIDIA's driver licence. Lumen does not redistribute it. <https://developer.nvidia.com/nvidia-system-management-interface>
+- **Windows PowerShell (`Get-PhysicalDisk`).** Invoked as a subprocess to read the storage bus type, which is what determines whether a DirectStorage path would be worth anything. It is a component of Windows. <https://learn.microsoft.com/powershell/module/storage/get-physicaldisk>
+- **DirectStorage runtime (`dstorage.dll`, `dstoragecore.dll`).** Lumen tests whether these libraries can be loaded. It does **not** bundle them. The DirectStorage redistributable is distributed by Microsoft under its own licence, and anyone shipping it beside Lumen must comply with those terms. <https://github.com/microsoft/DirectStorage>
+
+No GPU compute kernel, CUDA component, or DirectStorage binary is included in this repository or in the packaged release. The acceleration layer is a registry with no non-CPU implementation registered.
 
 ### Ollama and selected models
 
@@ -186,7 +209,7 @@ ReportLab is distributed under a BSD-style license.
 
 The Lumen open-book icon in lumen_reader/assets is original project artwork and is not copied from an existing trademark or third-party icon set.
 
-Reader state, dictionary caches, reading marks, rendered temporary PDF pages, extracted EPUB files, screenshots, and generated test fixtures are application or user data rather than bundled third-party libraries. Copyright and other rights in books opened by the user remain with their respective owners.
+Reader state, dictionary caches, the library index (`library-index.db`, a rebuildable cache of metadata and bounded text extracted from the user's own books), reading marks, rendered temporary PDF pages, extracted EPUB files, screenshots, and generated test fixtures are application or user data rather than bundled third-party libraries. Copyright and other rights in books opened by the user remain with their respective owners.
 
 Lumen does not grant permission to redistribute EPUBs, PDFs, dictionary content, web excerpts, model outputs, or other user-supplied material beyond the permissions supplied by their owners and applicable licenses.
 
@@ -199,7 +222,9 @@ Before distributing Lumen or a packaged executable:
 3. Retain licenses and copyright notices shipped with Python wheels, Qt, Qt WebEngine, Chromium, MuPDF, NLTK, Beautiful Soup, and WordNet.
 4. Preserve visible source attribution for dictionary and Wikimedia contributions.
 5. Keep optional Tesseract, Ollama models, Tlamatini, Playwright, and web services clearly distinguished from bundled code.
-6. Rebuild the dependency inventory from the exact versions being shipped.
-7. Review privacy disclosures if Ollama cloud models or external web evidence are enabled by default in a redistributed build.
+6. Confirm the SQLite build in the shipping interpreter includes FTS5, and retain any notices delivered with it.
+7. If a DirectStorage redistributable or any GPU component is added beside Lumen, satisfy its licence separately — none is bundled today.
+8. Rebuild the dependency inventory from the exact versions being shipped.
+9. Review privacy disclosures if Ollama cloud models or external web evidence are enabled by default in a redistributed build.
 
 Upstream names and trademarks belong to their respective owners. Their mention describes interoperability or attribution and does not imply endorsement.

@@ -281,3 +281,77 @@ def test_two_libraries_stay_separate(tmp_path: Path) -> None:
 
 def test_normalize_root_is_stable(tmp_path: Path) -> None:
     assert normalize_root(tmp_path) == normalize_root(str(tmp_path) + "//")
+
+
+# ─────────────────────────── upgrading an old index ───────────────────────
+
+
+#: The books table exactly as Lumen wrote it before generation marking existed.
+LEGACY_SCHEMA = """
+CREATE TABLE books (
+    id INTEGER PRIMARY KEY, root TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL, ext TEXT NOT NULL, size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '', publisher TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '', subjects TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', pages INTEGER NOT NULL DEFAULT 0,
+    has_text INTEGER NOT NULL DEFAULT 0, ok INTEGER NOT NULL DEFAULT 1,
+    error TEXT NOT NULL DEFAULT ''
+);
+CREATE VIRTUAL TABLE books_fts USING fts5(
+    title, author, name, subjects, publisher, book_id UNINDEXED,
+    tokenize = "unicode61 remove_diacritics 2");
+CREATE VIRTUAL TABLE content_fts USING fts5(
+    body, book_id UNINDEXED, tokenize = "unicode61 remove_diacritics 2");
+"""
+
+
+def make_legacy_index(database: Path, root: Path) -> None:
+    import sqlite3
+
+    connection = sqlite3.connect(str(database))
+    connection.executescript(LEGACY_SCHEMA)
+    connection.execute(
+        "INSERT INTO books (root, path, name, ext, size, mtime_ns, title, author)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (normalize_root(root), str(root / "old.epub"), "old.epub", ".epub", 10, 20,
+         "An Older Book", "Prior Author"),
+    )
+    connection.execute(
+        "INSERT INTO books_fts (title, author, name, subjects, publisher, book_id)"
+        " VALUES (?,?,?,?,?,?)", ("An Older Book", "Prior Author", "old.epub", "", "", 1),
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_an_index_from_an_older_lumen_still_opens(tmp_path: Path) -> None:
+    """Opening a pre-generation-marking database must not raise.
+
+    It did.  ``SCHEMA`` builds an index over ``seen_gen``, and ``CREATE INDEX``
+    naming a column the table does not have is a hard error - so the very first
+    thing Lumen did on a real 7.79 GB index from the previous version was fail
+    to start.  Nothing about a fresh database can catch that.
+    """
+    database = tmp_path / "legacy.db"
+    make_legacy_index(database, tmp_path)
+    with LibraryIndex(database) as index:
+        assert [row.title for row in index.search(tmp_path, "Older")] == ["An Older Book"]
+
+
+def test_upgrading_adds_the_generation_column(tmp_path: Path) -> None:
+    database = tmp_path / "legacy.db"
+    make_legacy_index(database, tmp_path)
+    with LibraryIndex(database) as index:
+        columns = {row["name"] for row in index.connection.execute("PRAGMA table_info(books)")}
+        assert "seen_gen" in columns
+        assert index.next_generation(tmp_path) == 1
+
+
+def test_an_upgraded_index_can_be_swept_again(library: Path, tmp_path: Path) -> None:
+    """The rows an older Lumen wrote must survive - and be re-swept correctly."""
+    database = tmp_path / "legacy.db"
+    make_legacy_index(database, library)
+    with LibraryIndex(database) as index:
+        counts = index.scan(library, workers=1)
+    assert counts.total == 3          # the phantom legacy row is pruned, the real books stay

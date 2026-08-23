@@ -10,6 +10,7 @@ from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
+from . import accel
 from .library_index import DEFAULT_TEXT_BUDGET, LibraryIndex, normalize_root
 from .marks import MARKS_FILENAME, MarksStore
 from .storage import ReaderStore
@@ -49,8 +50,17 @@ def resolve_library_root(store: ReaderStore, opened_book: str | None = None) -> 
     """Pick the datalake: the book's own folder, the reader's choice, or the cwd.
 
     Opening a specific book always wins - its siblings are the shelf the reader
-    is looking at.  Otherwise a folder the reader chose in Preferences beats the
-    installer's value, which in turn beats whatever directory we were started in.
+    is looking at.  Otherwise the folder chosen in Configuration (Ctrl+, in the
+    main window) beats the installer's value, which in turn beats whatever
+    directory we were started in.
+
+    That last fallback is why this used to look broken.  ``library_root`` was
+    read here from the very first version, but nothing in the application ever
+    wrote it - there was no settings window at all - so the answer was always
+    the installer's value or the working directory, and "Rescan library" would
+    faithfully sweep a folder with no books in it and report success.  The
+    Configuration window now writes the key, and the shelf shows the folder it
+    is using, so a wrong answer here is visible rather than silent.
     """
     if opened_book:
         try:
@@ -91,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     icon_path = Path(__file__).resolve().parent / "assets" / "lumen.ico"
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
+
+    # Ask what this machine has while the window is still being built, so the
+    # answer is ready before anything needs it and no reader ever waits on a
+    # GPU probe - least of all on a machine that has no GPU to probe.
+    accel.start_background_probe()
 
     data_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
     store = ReaderStore(data_dir / "reader-state.json")

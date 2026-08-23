@@ -1,6 +1,8 @@
 # Speed Reading Tool in Lumen Reader
 
-*Lumen Book Reader 1.3.0 · created by Angela López Mendoza · @angelahack1*
+*Lumen Book Reader · created by Angela López Mendoza · @angelahack1*
+
+*Companion documents: [README.md](README.md) · [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md) · [CHANGELOG.md](CHANGELOG.md)*
 
 ## Executive summary
 
@@ -198,6 +200,21 @@ Stop immediately for eye pain, persistent afterimages, headache, dizziness, naus
 - Both the normal and minimal-chrome playback states were exercised.
 - Real EPUB-spine and PDF-text-layer adapters both build complete speed-reading documents in the test suite.
 - The full regression suite also covers EPUB/PDF parsing, search, marks, dictionary behavior, storage, and safety.
+
+## Relationship to the library index
+
+RSVP and the library index read the same books by two different routes, and they do not constrain each other.
+
+The **library index** stores a *bounded* slice of each book's text — the **text budget** in **Configuration ▸ Sweep engine**, 250,000 characters by default. That budget exists so an index over tens of thousands of books stays a sane size, and it is what the shelf's **Inside books** search looks at.
+
+**RSVP never reads the index.** A session streams from the open book itself, through the same `text_for_chapter(index)` adapter interface described under [Text and position architecture](#text-and-position-architecture). A 900-page book speed-reads in full whether the index captured 250,000 characters of it or none at all.
+
+Two practical consequences:
+
+- Lowering the text budget, or turning off text extraction entirely, makes the   index smaller and sweeps faster. It does **not** shorten a speed-reading   session.
+- Finding a passage with **Inside books** and then speed-reading from it works,   but the search only sees as far into each book as the budget reached. That is   a limit of the search, not of the reader.
+
+The index, the sweep that builds it, and the text budget are documented in [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md).
 
 ## Sensible future extensions
 

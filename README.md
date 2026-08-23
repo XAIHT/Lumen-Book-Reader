@@ -7,7 +7,9 @@
 <p align="center">
   <strong>A focused desktop reading room for EPUB and PDF—built to help ideas land.</strong>
   <br>
-  Faithful pages, deep definitions, durable notes, and a spectacular RSVP speed reader.
+  Faithful pages, deep definitions, durable notes, a spectacular RSVP speed reader,
+  <br>
+  and a library engine that indexes tens of thousands of books and searches inside them.
 </p>
 
 <p align="center">
@@ -21,9 +23,10 @@
 <p align="center">
   <a href="#-the-crown-jewel-rsvp-speed-reading">RSVP</a> ·
   <a href="#-definitions-that-understand-the-page">Deep definitions</a> ·
+  <a href="#-your-library-indexed-and-searchable">Library engine</a> ·
   <a href="#-ollama-pro-setup">Ollama Pro</a> ·
   <a href="#-install-and-run">Install</a> ·
-  <a href="SpeedReadingToolInLumenReader.md">RSVP design notes</a>
+  <a href="#-documentation">Docs</a>
 </p>
 
 ![The current Lumen reader showing a faithful PDF and its live definition card](docs/screenshot.png)
@@ -34,6 +37,7 @@ Lumen gives books a calm native shell without flattening what makes them books. 
 |---|---|
 | ⚡ **RSVP speed reading** | Presents a book at one stable focus point, starting on the exact word you point at and marking the exact word you stopped on. |
 | ◇ **Definitions in context** | Resolves words and phrases with offline, conventional online, inferred, and optional expert sources—without leaving the page. |
+| ⟳ **A library that answers** | Indexes the whole shelf across a fleet of processes, then searches titles, authors, and the text *inside* every book in milliseconds. |
 | ✦ **Reading memory** | Restores position and keeps searchable notes, quotations, tags, and marks across the whole shelf. |
 | 📖 **EPUB + PDF fidelity** | Sanitized, themeable EPUB; high-resolution original-page PDF rendering with aligned selectable text. |
 
@@ -79,6 +83,68 @@ Double-click a word, or select a phrase and choose the definition prompt. Lumen 
 5. optional **Ollama contextual resolution**, only after conventional sources miss.
 
 That last stage is why Ollama exists in Lumen: **not to chat, summarize the book, or replace a dictionary, but to resolve a difficult definition from the passage being read**. Lumen supplies the selected expression, a bounded surrounding passage, and the current book/section titles; validates the structured answer; and labels the model that produced it.
+
+## ⟳ Your library, indexed and searchable
+
+Lumen keeps a rebuildable index of every book in your library folder, so the shelf can answer questions about thousands of files instantly — including questions about what is *inside* them.
+
+### Searching the shelf
+
+Two modes, side by side above the shelf:
+
+| Mode | Finds |
+|---|---|
+| **Titles & authors** | Metadata matches, ranked by relevance |
+| **Inside books** | Matches in the indexed text of every book, with a highlighted snippet |
+
+Filter chips narrow to **EPUB only** or **PDF only**, results are paged, and the search box speaks full-text query syntax:
+
+| Type this | To get |
+|---|---|
+| `machine learning` | Books matching both terms |
+| `"exact phrase"` | A phrase match |
+| `ext:pdf` | A column-qualified term |
+| `neural*` | A prefix match |
+
+Diacritics are folded, so *Gödel* finds *Godel*.
+
+### The Turbo Sweep
+
+**⟳ Sweep this folder now** (or <kbd>F5</kbd>) reads every book under the library folder and opens a live monitor while it does. The monitor shows **one tile per extractor process** — its PID, the book it is reading at that instant, and how many it has finished — plus books found, already current, unreadable, folders swept, bytes seen, throughput, and an estimate. You can pause it, resume it, stop it, or open the folder it is sweeping.
+
+The sweep is a pipeline, not a sequence of phases. Directory walking, index triage, book extraction and index writing all run at the same time, joined by bounded queues, which means two things that matter on a large or remote library:
+
+- **The fleet starts reading before the walk has finished.** On a slow share that is the difference between minutes of idle cores and none.
+- **Memory is set by the queue depths, not by the size of the library.** Nothing in the pipeline holds the file list, so a NAS with millions of books costs the same resident memory as a shelf with a hundred.
+
+Books that have not changed since the last sweep are recognised by size and modification time and are never re-read, so a second sweep of an unchanged library costs one walk. Books that have vanished from disk are forgotten when the sweep completes — a setting you can turn off if your library lives on a drive that is not always mounted.
+
+Measured on a real 9,335-book, 15.9 GB library (8,207 EPUB and 1,128 PDF) on a 16-core / 22-thread machine: **9,335 books indexed in about four minutes**, with all 22 extractor processes busy, after which a title search answers in single-digit milliseconds.
+
+### Running with or without a GPU
+
+There is one build of Lumen, and it adapts. Extraction and search are replaceable backends rather than inlined code, and both default to **Automatic**: Lumen detects what the machine has — CUDA GPU, the DirectStorage runtime, NVMe — and uses the fastest path that is genuinely available, falling back to the CPU fleet and SQLite FTS5 when it is not. Detection runs in the background at startup, so a machine with no GPU at all never waits for it and never has to be configured differently.
+
+The **Acceleration & scale** tab shows exactly what was detected and, when a faster backend is unavailable, precisely which piece is missing — distinguishing *"no CUDA-capable GPU on this machine"* from *"the hardware is ready, but no kernel is registered in this build"*. **It never claims a GPU is doing work that the CPU is doing.** Today no GPU kernel ships, so both automatic paths resolve to the CPU fleet and SQLite FTS5, and the tab says so.
+
+The design, the schema, the pipeline, the measured numbers, and the current limits are all in **[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md)**.
+
+## ⚙ Configuration
+
+Every setting Lumen has lives in one window: press <kbd>Ctrl+,</kbd>, or use **⚙ Configuration** in the header, or **Change folder & settings** on the shelf.
+
+The first control is the one that matters most — **the library folder**. Lumen reads it back from disk as you type and tells you how many books are actually there, so a wrong path is obvious before you save it rather than after a sweep comes back empty. A folder that does not exist is refused rather than saved, and the last twelve libraries you used stay one dropdown away.
+
+| Tab | Covers |
+|---|---|
+| **Library** | The library folder, what counts as a book, and what to leave out — skipped folders, exclude globs, depth limit, size bounds |
+| **Sweep engine** | How many extractor processes and at what priority, how many directory walkers, how deeply each book is read, queue depths, and when Lumen sweeps |
+| **Acceleration & scale** | What this machine has, which backends were chosen and why, and how large the index is projected to grow |
+| **Index** | Where the database is, how big it is, when it was last swept, optimise and compact, and forgetting libraries whose folder has gone |
+| **Search & shelf** | Which mode a search starts in, the debounce, the page size, the snippet width |
+| **Reading** | Theme, EPUB type size, sidebar — and pointers to the settings that live in their own windows |
+
+**Save and sweep now** saves everything and starts a sweep in one step.
 
 ## ☁ Ollama Pro setup
 
@@ -133,13 +199,13 @@ If discovery fails, verify that the Ollama tray application is running, <code>ol
 ## ✨ Everything else
 
 - Search the current page or the complete book from the current position, forward or backward.
-- Search the shelf by title, author, or filename; open by dialog, command line, or drag-and-drop.
 - Browse nested EPUB navigation or an embedded PDF outline, with page fallback when no outline exists.
 - Restore the exact section/page and within-page position.
 - Keep notes and reading marks in the portable <code>lumen-reading-marks.json</code> file beside the library.
 - Use Night, Paper, or Sepia themes; EPUB text scales from 14–32 px.
 - Open password-protected PDFs without persisting the password.
 - Recover text from image-only PDFs when optional [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) is installed on <code>PATH</code>.
+- Rebuild the index headlessly from a shell with <code>python reindex.py</code>, without opening the reader.
 - Scroll precisely with a wheel, touchpad, or touch gesture across the shelf, reader, sidebars, dialogs, and definition cards.
 
 ## 🚀 Install and run
@@ -161,7 +227,7 @@ python run_reader.py
 python run_reader.py "C:\Books\My Book.epub"
 ~~~
 
-The launch directory becomes the visible shelf; recently opened books outside it are remembered too.
+On first run the launch directory becomes the visible shelf. Set the folder you actually keep books in from **⚙ Configuration** (<kbd>Ctrl+,</kbd>) — it is remembered from then on, and the shelf always shows which folder it is displaying. Recently opened books outside it are remembered too. The first sweep builds the index; after that, sweeps are incremental.
 
 ### Windows installer
 
@@ -185,7 +251,9 @@ Every key, shortcut and file it writes is removed by the uninstaller, and
 `tests/test_release_scheme.py` fails the build if that stops being true.
 
 Your books are never touched, and reading positions, bookmarks, notes and tags
-survive an uninstall unless you explicitly ask for them to go.
+survive an uninstall unless you explicitly ask for them to go. The library index
+is a cache in `%APPDATA%\Lumen Reader` — deleting it costs one sweep and nothing
+else.
 
 Full details, including the exact registry surfaces and why each one is there:
 **[RELEASING.md](RELEASING.md)**.
@@ -199,6 +267,8 @@ Full details, including the exact registry surfaces and why each one is there:
 | Action | Keyboard |
 |---|---|
 | Open a book | <kbd>Ctrl+O</kbd> |
+| Configuration — library folder and every setting | <kbd>Ctrl+,</kbd> |
+| Sweep the library folder | <kbd>F5</kbd> |
 | Search the open book | <kbd>Ctrl+F</kbd> |
 | Next / previous page or section | <kbd>Page Down</kbd> / <kbd>Page Up</kbd> |
 | Alternate next / previous | <kbd>Ctrl+→</kbd> / <kbd>Ctrl+←</kbd> |
@@ -214,7 +284,7 @@ Full details, including the exact registry surfaces and why each one is there:
 
 Lumen treats book files as untrusted input. EPUB extraction rejects traversal and oversized payloads, active content is removed, rendered chapters use a restrictive content-security policy, and Chromium cannot navigate the reading surface from an ordinary click. PDF pages are rasterized from the original document, while only their aligned text is made interactive.
 
-Reader state and the definition cache use the operating system’s application-data directory. Cross-book notes live in <code>lumen-reading-marks.json</code> in the launch directory so the reading library remains portable.
+Reader state, the definition cache, and the library index use the operating system’s application-data directory. Cross-book notes live in <code>lumen-reading-marks.json</code> beside the library so the reading library remains portable. The index holds only what it needs to answer a search — metadata and a bounded slice of each book’s text — and is rebuildable at any time.
 
 Run the complete regression suite:
 
@@ -223,7 +293,17 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, and the release scheme’s install/uninstall symmetry.
+**300 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, the sweep pipeline and its configuration round-trip, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, and the release scheme’s install/uninstall symmetry.
+
+## 📚 Documentation
+
+| Document | What it covers |
+|---|---|
+| **[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md)** | The Turbo Sweep pipeline, the index and its schema, search, the acceleration seam, measured numbers, and known limits |
+| **[SpeedReadingToolInLumenReader.md](SpeedReadingToolInLumenReader.md)** | The RSVP design: evidence, timing model, markers, configuration reference, and responsible use |
+| **[RELEASING.md](RELEASING.md)** | The release pipeline, versioning contract, every registry surface the installer touches, and the install/uninstall mirror |
+| **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** | Runtime libraries, bundled lexical data, optional components, online services, and the redistribution checklist |
+| **[CHANGELOG.md](CHANGELOG.md)** | What changed in each release |
 
 ## License
 
