@@ -27,6 +27,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialogButtonBox,
     QFileDialog,
@@ -812,15 +813,40 @@ class ConfigurationDialog(ScreenFittingDialog):
         self.index_facts.setText("\n".join(facts))
 
     def _optimise_index(self) -> None:
+        # This can take a while on a large index and it blocks the GUI thread,
+        # so at minimum the pointer has to say so. A window that looks idle
+        # while it works is a window the user closes or force-quits.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.library_index.optimize()
+            report = self.library_index.optimize()
         except Exception as exception:
             QMessageBox.warning(self, "Could not optimise",
                                 f"{type(exception).__name__}: {exception}")
             return
+        finally:
+            QApplication.restoreOverrideCursor()
+
         self._refresh_index_facts()
-        QMessageBox.information(self, "Index optimised",
-                                "The full-text indexes were merged and the database compacted.")
+        if not report.deferred:
+            QMessageBox.information(
+                self, "Index optimised",
+                f"The full-text indexes were merged and the database compacted.\n\n"
+                f"{human_bytes(report.reclaimed)} given back.")
+            return
+
+        # Say what was skipped and why, with the measurement. Silent throttling
+        # reads as a bug - and here the alternative to being honest was filling
+        # the user's system drive.
+        QMessageBox.information(
+            self, "Index partly compacted",
+            f"The index was merged incrementally and {human_bytes(report.reclaimed)} "
+            f"was given back.\n\n"
+            f"A full compaction was skipped: it needs about "
+            f"{human_bytes(report.needed)} free on this drive and there is "
+            f"{human_bytes(report.free_before)}. Rewriting the whole index and "
+            f"then copying the database needs room for both at once, and running "
+            f"a system drive out of space stops far more than Lumen.\n\n"
+            f"Free up space and run this again to compact it fully.")
 
     def _clear_index(self) -> None:
         root = self.root_edit.text().strip() or self.original_root

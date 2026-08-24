@@ -21,14 +21,27 @@ checklist reads like the install run played backwards:
     register_associations.ps1        ->  unregister_associations.ps1
     refresh the shell                ->  refresh the shell
 
-Two things the installer never had to decide, this one must ASK:
+Removal is TOTAL. When this wizard finishes, nothing on the machine says Lumen
+was ever installed: not a file, not a shortcut, not a registry value, not an
+association, not a shell cache entry. The old build kept ``%APPDATA%\\Lumen
+Reader`` unless the user ticked a box, which meant an uninstall left the whole
+record of their configuration behind - the opposite of what "uninstall" means.
+
+Exactly two things survive, and each for a reason that outranks tidiness:
 
   * The user's books. Lumen never puts books in the install folder, but if the
     library folder happens to sit inside it, the wizard says so out loud and
-    refuses to touch it.
-  * Reading state. Positions, bookmarks, notes and tags live in
-    ``%APPDATA%\\Lumen Reader``. That is the record of everything the person
-    has read, so it survives an uninstall unless they explicitly tick the box.
+    refuses to touch it. Erasing our own traces must never erase someone's
+    library; a reinstall is an afternoon, a deleted book collection is not.
+  * Reading positions, marks, notes, quotes and tags - but they do not stay
+    where they were. They are EXPORTED first, to a folder the user chooses, as
+    one plain JSON file they can keep, move or read without Lumen. Then the
+    original is erased with everything else.
+
+That ordering is the whole design: ASK, EXPORT, VERIFY, THEN ERASE. Nothing is
+deleted until the export has been written and re-read from disk, because the
+only unrecoverable outcome here is erasing a person's reading history and
+handing them a file that turns out to be empty.
 
 Self-contained: standard library only, exactly like the installer.
 """
@@ -49,6 +62,7 @@ import tkinter as tk
 from ctypes import wintypes
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
 # ─── Product identity (must match install.py) ────────────────────────────────
 PRODUCT_NAME = "Lumen Book Reader"
@@ -59,6 +73,11 @@ ARP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LumenBookReader"
 DISCOVERY_KEY = r"Software\XAIHT\Lumen Book Reader"
 MANIFEST_NAME = "LumenInstall.json"
 APPDATA_DIR_NAME = "Lumen Reader"        # QApplication.setOrganizationName
+
+#: Must match ``lumen_reader.marks.MARKS_FILENAME``.  It is duplicated rather
+#: than imported because this wizard is deliberately standard-library only - it
+#: has to run after the application it is deleting is already gone.
+MARKS_FILENAME = "lumen-reading-marks.json"
 
 
 # ─── Version resolution (identical contract to install.py) ───────────────────
@@ -185,11 +204,12 @@ class LumenUninstaller:
     """The dark-themed removal wizard for Lumen Book Reader."""
 
     STEPS = [
-        ("Removing shortcuts…",                 0.08),
-        ("Unregistering file associations…",    0.14),
+        ("Saving your reading data…",           0.10),
+        ("Removing shortcuts…",                 0.07),
+        ("Unregistering file associations…",    0.13),
         ("Removing the Windows registration…",  0.08),
-        ("Deleting application files…",         0.55),
-        ("Clearing reading data…",              0.07),
+        ("Deleting application files…",         0.45),
+        ("Erasing configuration and caches…",   0.09),
         ("Refreshing the Windows shell…",       0.08),
     ]
 
@@ -216,12 +236,20 @@ class LumenUninstaller:
         detected, source = self._detect_install_path()
         self.install_path = tk.StringVar(value=detected)
         self._detection_source = source
-        self.purge_appdata_var = tk.BooleanVar(value=False)
+
+        # Where the export goes, and whether it happens at all.  The DEFAULT is
+        # to save: an uninstall that silently discards someone's reading history
+        # because they did not notice a checkbox is the mistake this wizard
+        # exists to avoid.  Opting out is possible, but it must be deliberate.
+        self.save_path = tk.StringVar(value=self._default_save_dir())
+        self.skip_save_var = tk.BooleanVar(value=False)
 
         self._progress_value = 0.0
         self._uninstalling = False
         self._summary: list[str] = []
         self._kept: list[str] = []
+        self._export_path = ""
+        self._export_counts: dict[str, int] = {}
 
         self._build_ui()
 
@@ -358,7 +386,10 @@ class LumenUninstaller:
             "Desktop and Start menu shortcuts",
             "The .epub and .pdf associations Lumen registered",
             "Lumen's entry in Settings ▸ Apps ▸ Installed apps",
-            "Lumen's registry keys under HKEY_CURRENT_USER",
+            "Every Lumen registry key under HKEY_CURRENT_USER",
+            "All configuration: theme, fonts, sweep, search, acceleration",
+            "The library index and every cache, wherever they live",
+            "Explorer's recent-files and icon-cache traces of Lumen",
         ]
         for text in items:
             tk.Label(inner, text=f"   ✗   {text}", font=(FONT_FAMILY, 9),
@@ -369,9 +400,10 @@ class LumenUninstaller:
                  bg=BG_PANEL, fg=FG_SECONDARY).pack(anchor="w")
         tk.Label(
             inner,
-            text="Your books are never touched. Reading positions, bookmarks, notes "
-                 "and tags live outside the installation folder and are kept unless "
-                 "you tick the box below.",
+            text="Your books are never touched. Where you were in every book — plus "
+                 "your marks, notes, quotes and tags — is SAVED to the folder below "
+                 "as one file you keep, and everything else Lumen ever wrote is then "
+                 "erased from this machine.",
             font=(FONT_FAMILY, 8), bg=BG_PANEL, fg=FG_DIM, justify="left",
             # Let Tk wrap it. A hand-placed newline only looks right at one font
             # size on one DPI, and the installer already shipped a label that
@@ -379,18 +411,52 @@ class LumenUninstaller:
             wraplength=600, anchor="w",
         ).pack(anchor="w", pady=(0, 6), fill="x")
 
-        appdata = self._appdata_path()
-        self.purge_check = tk.Checkbutton(
+        row = tk.Frame(inner, bg=BG_PANEL)
+        row.pack(fill="x")
+        self.save_entry = tk.Entry(
+            row, textvariable=self.save_path, font=(FONT_FAMILY, 9),
+            bg=BG_INPUT, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
+            relief="flat", highlightthickness=1,
+            highlightbackground=BORDER_COLOR, highlightcolor=ACCENT,
+        )
+        self.save_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        self._make_button(row, "Choose…", self._browse_save, width=10,
+                          small=True).pack(side="left", padx=(8, 0))
+
+        self.skip_check = tk.Checkbutton(
             inner,
-            text="Also delete my reading positions, bookmarks, notes and tags",
-            variable=self.purge_appdata_var, font=(FONT_FAMILY, 9),
+            text="Don't save it — erase my reading history too (cannot be undone)",
+            variable=self.skip_save_var, command=self._sync_save_row,
+            font=(FONT_FAMILY, 9),
             bg=BG_PANEL, fg=FG_PRIMARY, activebackground=BG_PANEL,
             activeforeground=ERROR, selectcolor=BG_INPUT, highlightthickness=0,
             bd=0, cursor="hand2", anchor="w",
         )
-        self.purge_check.pack(anchor="w")
-        tk.Label(inner, text=f"      {appdata}", font=(FONT_FAMILY, 8),
-                 bg=BG_PANEL, fg=FG_DIM, anchor="w").pack(fill="x")
+        self.skip_check.pack(anchor="w", pady=(6, 0))
+
+    def _sync_save_row(self) -> None:
+        """Grey the destination out when the user has opted out of saving.
+
+        A live entry box under a ticked "don't save" is a contradiction, and the
+        one thing this screen cannot afford is a user who is unsure whether
+        their reading history is being kept.
+        """
+        skipping = bool(self.skip_save_var.get())
+        self.save_entry.configure(
+            state="disabled" if skipping else "normal",
+            fg=FG_DIM if skipping else FG_PRIMARY,
+        )
+
+    def _browse_save(self) -> None:
+        if self.skip_save_var.get():
+            return
+        current = self.save_path.get().strip() or self._default_save_dir()
+        chosen = filedialog.askdirectory(
+            title="Where should your reading data be saved?",
+            initialdir=current if os.path.isdir(current) else self._default_save_dir(),
+        )
+        if chosen:
+            self.save_path.set(os.path.normpath(chosen))
 
     def _build_progress_section(self, inner: tk.Frame) -> None:
         self.progress_frame = tk.Frame(inner, bg=BG_PANEL)
@@ -463,6 +529,174 @@ class LumenUninstaller:
         return os.path.join(os.path.expanduser("~"), "AppData", "Roaming",
                             APPDATA_DIR_NAME)
 
+    # ─── The export: everything the user made, in one portable file ──────
+    @staticmethod
+    def _shell_folder(name: str) -> str:
+        """A real shell folder, resolved the way Windows actually stores it.
+
+        ``~\\Desktop`` is a guess, and on any machine with OneDrive folder
+        protection turned on it is the WRONG guess - the real Desktop is
+        ``%USERPROFILE%\\OneDrive\\Desktop`` and the literal one is an empty
+        leftover.  Offering to save someone's reading history into a folder
+        they never look at is the same as not saving it, so the redirect is
+        read from the registry where Explorer keeps it.
+        """
+        if sys.platform == "win32":
+            try:
+                import winreg
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                    r"\User Shell Folders",
+                ) as key:
+                    raw, _kind = winreg.QueryValueEx(key, name)
+                resolved = os.path.expandvars(str(raw))
+                if resolved and os.path.isdir(resolved):
+                    return resolved
+            except Exception:
+                pass
+        fallback = os.path.join(os.path.expanduser("~"), name)
+        return fallback if os.path.isdir(fallback) else os.path.expanduser("~")
+
+    @classmethod
+    def _default_save_dir(cls) -> str:
+        return cls._shell_folder("Desktop")
+
+    def _collect_reading_data(self) -> tuple[dict, dict[str, int]]:
+        """Gather positions, marks, notes, quotes and tags - and nothing else.
+
+        Deliberately selective.  ``reader-state.json`` mixes the two things this
+        uninstall treats oppositely: ``books`` and ``recent_books`` are the
+        user's reading, while ``theme``, ``font_size``, ``scan``, ``search`` and
+        ``accel`` are configuration the user asked to see erased.  Copying the
+        whole file would smuggle the configuration back out in the export.
+
+        ``books`` is keyed by a hash of ``path|size|mtime``, so it is exported
+        verbatim: re-computing that key needs the same three inputs, and any
+        rewriting here would silently break the match on reinstall.
+        """
+        payload: dict[str, Any] = {
+            "_what": "Lumen Book Reader - your reading data, exported at uninstall",
+            "_created_by": "Angela López Mendoza · @angelahack1",
+            "_exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "_restore": (
+                "Keep this file. Reinstall Lumen, then use it to bring back where "
+                "you were in every book along with your marks, notes and tags."
+            ),
+            "positions": {},
+            "recent_books": [],
+            "reading_marks": [],
+        }
+        counts = {"positions": 0, "recent": 0, "marks": 0, "sources": 0}
+
+        state = os.path.join(self._appdata_path(), "Lumen", "reader-state.json")
+        for candidate in (state, os.path.join(self._appdata_path(), "reader-state.json")):
+            doc = self._read_json(candidate)
+            if not isinstance(doc, dict):
+                continue
+            books = doc.get("books")
+            if isinstance(books, dict) and books:
+                payload["positions"].update(books)
+                counts["sources"] += 1
+            recent = doc.get("recent_books")
+            if isinstance(recent, list) and not payload["recent_books"]:
+                payload["recent_books"] = recent
+        counts["positions"] = len(payload["positions"])
+        counts["recent"] = len(payload["recent_books"])
+
+        seen_marks: set[str] = set()
+        for marks_file in self._find_marks_files():
+            doc = self._read_json(marks_file)
+            entries = doc.get("marks") if isinstance(doc, dict) else doc
+            if not isinstance(entries, list):
+                continue
+            counts["sources"] += 1
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                # Same mark can sit in the library copy and an old migration
+                # copy; keep one, and keep the first (newest path searched).
+                key = str(entry.get("id") or "") or json.dumps(entry, sort_keys=True)
+                if key in seen_marks:
+                    continue
+                seen_marks.add(key)
+                payload["reading_marks"].append(entry)
+        counts["marks"] = len(payload["reading_marks"])
+        return payload, counts
+
+    @staticmethod
+    def _read_json(path: str) -> Any:
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                return json.load(handle)
+        except Exception:
+            return None
+
+    def _find_marks_files(self) -> list[str]:
+        """Every ``lumen-reading-marks.json`` this machine still has.
+
+        Marks live *beside the library*, not in AppData, so there is no single
+        place to look.  The recent-books list is the only record of where the
+        user's libraries actually were, which makes it the map for this search.
+        """
+        found: list[str] = []
+
+        def offer(path: str) -> None:
+            if path and os.path.isfile(path) and path not in found:
+                found.append(path)
+
+        appdata = self._appdata_path()
+        for base in (os.path.join(appdata, "Lumen"), appdata):
+            offer(os.path.join(base, MARKS_FILENAME))
+
+        state = self._read_json(os.path.join(appdata, "Lumen", "reader-state.json"))
+        recent = state.get("recent_books") if isinstance(state, dict) else None
+        for item in recent or []:
+            book = item.get("path") if isinstance(item, dict) else None
+            if book:
+                offer(os.path.join(os.path.dirname(str(book)), MARKS_FILENAME))
+
+        target = self.install_path.get().strip()
+        if target:
+            offer(os.path.join(target, MARKS_FILENAME))
+            offer(os.path.join(target, "library", MARKS_FILENAME))
+        return found
+
+    def _export_reading_data(self, destination: str) -> tuple[str, dict[str, int]]:
+        """Write the export, then read it back before anyone deletes anything.
+
+        The read-back is not paranoia: this file is about to become the only
+        copy that exists.  A full disk, a synced folder that rejects the write,
+        or an antivirus that quarantines it mid-save all produce a plausible
+        success and an unusable file, and by then the original is gone.
+        """
+        payload, counts = self._collect_reading_data()
+        os.makedirs(destination, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d")
+        path = os.path.join(destination, f"Lumen-reading-data-{stamp}.json")
+        serial = 2
+        while os.path.exists(path):
+            path = os.path.join(destination,
+                                f"Lumen-reading-data-{stamp}-{serial}.json")
+            serial += 1
+
+        temporary = path + ".part"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+
+        verified = self._read_json(path)
+        if not isinstance(verified, dict) or len(verified.get("positions", {})) != counts["positions"]:
+            raise OSError(
+                f"the export at {path} could not be read back correctly - "
+                f"nothing has been deleted"
+            )
+        print(f"[UNINSTALL] Exported reading data -> {path} "
+              f"({counts['positions']} positions, {counts['marks']} marks)")
+        return path, counts
+
     def _browse(self) -> None:
         current = self.install_path.get().strip()
         chosen = filedialog.askdirectory(
@@ -502,14 +736,43 @@ class LumenUninstaller:
             )
             return None
 
+        # The destination has to be usable BEFORE anything is deleted - a
+        # save folder that turns out to be unwritable after the erase is the
+        # one failure this design cannot recover from.
+        if not self.skip_save_var.get():
+            destination = self.save_path.get().strip()
+            if not destination:
+                messagebox.showwarning(
+                    "Nowhere to save your reading data",
+                    "Choose a folder for your reading data, or tick the box to "
+                    "erase it along with everything else.")
+                return None
+            try:
+                os.makedirs(destination, exist_ok=True)
+                probe = os.path.join(destination, ".lumen-write-test")
+                with open(probe, "w", encoding="utf-8") as handle:
+                    handle.write("ok")
+                os.remove(probe)
+            except OSError as exc:
+                messagebox.showerror(
+                    "That folder cannot be written to",
+                    f"{destination}\n\n{exc}\n\nNothing has been removed. Please "
+                    "choose a folder you can write to.")
+                return None
+
         # A "delete everything" confirmation must state what is about to go.
-        extras = []
-        if self.purge_appdata_var.get():
-            extras.append(f"\nAND your reading data in:\n{self._appdata_path()}")
+        if self.skip_save_var.get():
+            fate = ("\n\nYour reading positions, marks, notes, quotes and tags "
+                    "will be ERASED with everything else. This cannot be undone.")
+        else:
+            fate = ("\n\nYour reading positions, marks, notes, quotes and tags "
+                    f"will first be saved to:\n{self.save_path.get().strip()}")
         confirmed = messagebox.askyesno(
             "Remove Lumen Book Reader?",
-            f"This will delete:\n{target}"
-            + "".join(extras)
+            f"This will delete:\n{target}\n\nAND every other trace of Lumen on "
+            f"this machine — all configuration, the library index, every cache, "
+            f"and every registry key."
+            + fate
             + "\n\nYour books are not touched. Continue?",
             icon="warning", default="no",
         )
@@ -538,7 +801,7 @@ class LumenUninstaller:
             return
         self._uninstalling = True
         for widget in (self.uninstall_btn, self.browse_btn, self.path_entry,
-                       self.purge_check):
+                       self.skip_check, self.save_entry):
             widget.config(state="disabled")
         self.progress_frame.pack(
             fill="x", before=self.progress_frame.master.winfo_children()[-1])
@@ -586,10 +849,32 @@ class LumenUninstaller:
             except OSError:
                 pass
 
-            # ── 0. Shortcuts ────────────────────────────────────────────
+            # ── 0. Export FIRST ─────────────────────────────────────────
+            # Before a single file is touched. If this raises, the exception
+            # handler below aborts the whole uninstall with everything still
+            # in place - which is the only correct outcome when the user's
+            # only copy could not be written.
             idx = 0
             self._activate_step(idx)
-            self._set_progress(0.0, "Removing shortcuts…")
+            if self.skip_save_var.get():
+                self._mark_step(idx, True, "(skipped, as you asked)")
+            else:
+                self._set_progress(0.0, "Saving your reading data…")
+                self._export_path, self._export_counts = self._export_reading_data(
+                    self.save_path.get().strip() or self._default_save_dir()
+                )
+                self._mark_step(
+                    idx, True,
+                    f"({self._export_counts['positions']} positions, "
+                    f"{self._export_counts['marks']} marks)",
+                )
+            cumulative += self.STEPS[idx][1]
+            self._set_progress(cumulative)
+
+            # ── 1. Shortcuts ────────────────────────────────────────────
+            idx = 1
+            self._activate_step(idx)
+            self._set_progress(cumulative, "Removing shortcuts…")
             ok, detail = self._run_ps1("RemoveShortcut.ps1", target)
             if not ok:
                 notes.append(f"shortcuts: {detail}")
@@ -597,8 +882,8 @@ class LumenUninstaller:
             self._set_progress(cumulative)
             self._mark_step(idx, ok, "" if ok else "(see log)")
 
-            # ── 1. File associations ────────────────────────────────────
-            idx = 1
+            # ── 2. File associations ────────────────────────────────────
+            idx = 2
             self._activate_step(idx)
             self._set_progress(cumulative, "Unregistering file associations…")
             ok, detail = self._run_ps1("unregister_associations.ps1", target)
@@ -613,8 +898,8 @@ class LumenUninstaller:
             self._set_progress(cumulative)
             self._mark_step(idx, ok, "" if ok else "(see log)")
 
-            # ── 2. Registry: ARP + discovery ────────────────────────────
-            idx = 2
+            # ── 3. Registry: ARP + discovery ────────────────────────────
+            idx = 3
             self._activate_step(idx)
             self._set_progress(cumulative, "Removing the Windows registration…")
             self._delete_registry_tree(ARP_KEY)
@@ -623,8 +908,8 @@ class LumenUninstaller:
             self._set_progress(cumulative)
             self._mark_step(idx)
 
-            # ── 3. Files ────────────────────────────────────────────────
-            idx = 3
+            # ── 4. Files ────────────────────────────────────────────────
+            idx = 4
             self._activate_step(idx)
             weight = self.STEPS[idx][1]
             removed, failed = self._remove_files(target, cumulative, weight)
@@ -637,21 +922,21 @@ class LumenUninstaller:
                 notes.append(f"{failed} file(s) were locked and will be removed "
                              f"when you next restart Windows")
 
-            # ── 4. Reading data (only when explicitly asked) ────────────
-            idx = 4
+            # ── 5. Configuration and caches: unconditional ──────────────
+            # Not a choice any more. Everything worth keeping left in the
+            # export at step 0; what is here now is configuration and a
+            # rebuildable index, and an uninstall that leaves those behind is
+            # not an uninstall.
+            idx = 5
             self._activate_step(idx)
-            appdata = self._appdata_path()
-            if self.purge_appdata_var.get():
-                self._set_progress(cumulative, "Clearing reading data…")
-                purged = self._remove_tree(appdata)
-                self._mark_step(idx, purged, "" if purged else "(nothing to clear)")
-            else:
-                self._mark_step(idx, True, "(kept, as you asked)")
+            self._set_progress(cumulative, "Erasing configuration and caches…")
+            erased = self._erase_all_traces()
+            self._mark_step(idx, True, f"({erased} location(s) erased)")
             cumulative += self.STEPS[idx][1]
             self._set_progress(cumulative)
 
-            # ── 5. Shell refresh ────────────────────────────────────────
-            idx = 5
+            # ── 6. Shell refresh ────────────────────────────────────────
+            idx = 6
             self._activate_step(idx)
             self._set_progress(cumulative, "Refreshing the Windows shell…")
             self._refresh_shell()
@@ -946,6 +1231,189 @@ del /f /q "%~f0" >nul 2>&1
         print("[UNINSTALL] Associations cleared via the winreg fallback.")
         return ok
 
+    # ─── Total erasure ───────────────────────────────────────────────────
+    def _protects_export(self, path: str) -> bool:
+        """Is the user's freshly written export inside this tree?
+
+        It can be: the destination folder is theirs to choose, and nothing stops
+        them choosing ``%APPDATA%\\Lumen Reader``.  Deleting the export as part
+        of erasing our traces would destroy the one file this whole wizard
+        exists to hand them.
+        """
+        if not self._export_path:
+            return False
+        try:
+            return os.path.commonpath(
+                [os.path.abspath(path), os.path.abspath(self._export_path)]
+            ) == os.path.abspath(path)
+        except ValueError:      # different drives - no containment possible
+            return False
+
+    def _erase_all_traces(self) -> int:
+        """Erase every remaining trace of Lumen: state, caches, registry.
+
+        Returns the number of locations that actually held something, so the
+        summary can report a real figure rather than a reassuring one.
+        """
+        erased = 0
+
+        # ── State and cache directories ──────────────────────────────────
+        roaming = os.environ.get("APPDATA", "")
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidates = [
+            os.path.join(roaming, APPDATA_DIR_NAME),
+            os.path.join(local, APPDATA_DIR_NAME),
+            os.path.join(local, FOLDER_NAME),
+            os.path.join(local, "Temp", APPDATA_DIR_NAME),
+        ]
+        for directory in candidates:
+            if not directory or not os.path.isdir(directory):
+                continue
+            if self._protects_export(directory):
+                print(f"[UNINSTALL] Kept {directory} - it holds your export.")
+                self._kept.append(f"{directory}  (holds your saved reading data)")
+                continue
+            if self._remove_tree(directory):
+                erased += 1
+                print(f"[UNINSTALL] Erased {directory}")
+
+        if sys.platform != "win32":
+            return erased
+
+        # ── Registry ─────────────────────────────────────────────────────
+        # The PowerShell unregisterer covers these too, but it is allowed to
+        # fail (execution policy, missing pwsh) and this pass is not. Deleting
+        # an absent key is a no-op, so running both is free.
+        for key_path in (
+            ARP_KEY,
+            DISCOVERY_KEY,
+            rf"Software\Classes\Applications\{EXE_NAME}",
+            rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{EXE_NAME}",
+        ):
+            if self._delete_registry_tree(key_path):
+                erased += 1
+
+        self._purge_associations_via_winreg()
+        erased += self._drop_vendor_key_if_empty()
+        erased += self._purge_shell_history()
+        return erased
+
+    @staticmethod
+    def _drop_vendor_key_if_empty() -> int:
+        """Remove ``HKCU\\Software\\XAIHT`` - but only if Lumen was alone in it.
+
+        The vendor key is shared ground.  Another XAIHT product living under it
+        must survive Lumen's uninstall, so this deletes the parent only when
+        removing Lumen left it with no subkeys and no values.
+        """
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\XAIHT", 0,
+                                winreg.KEY_ALL_ACCESS) as key:
+                subkeys, values, _ = winreg.QueryInfoKey(key)
+                if subkeys or values:
+                    print("[UNINSTALL] HKCU\\Software\\XAIHT holds other products - kept.")
+                    return 0
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\XAIHT")
+            print("[UNINSTALL] Removed the now-empty HKCU\\Software\\XAIHT key.")
+            return 1
+        except FileNotFoundError:
+            return 0
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _purge_shell_history() -> int:
+        """Drop the Explorer caches that name Lumen by path.
+
+        Scoped deliberately to entries that *contain our executable name*.  The
+        neighbouring ``RecentDocs\\.epub`` list is NOT touched: it records the
+        user's own recently-opened books, exists with or without Lumen, and
+        clearing it would delete a history that was never ours to delete.
+        """
+        try:
+            import winreg
+        except Exception:
+            return 0
+
+        removed = 0
+        needle = EXE_NAME.lower()
+
+        # MUICache stores the friendly name against the full exe path.
+        mui = (r"Software\Classes\Local Settings\Software\Microsoft"
+               r"\Windows\Shell\MuiCache")
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, mui, 0,
+                                winreg.KEY_ALL_ACCESS) as key:
+                doomed = []
+                index = 0
+                while True:
+                    try:
+                        name, _value, _kind = winreg.EnumValue(key, index)
+                    except OSError:
+                        break
+                    if needle in name.lower() or FOLDER_NAME.lower() in name.lower():
+                        doomed.append(name)
+                    index += 1
+                for name in doomed:
+                    try:
+                        winreg.DeleteValue(key, name)
+                        removed += 1
+                    except OSError:
+                        pass
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+        # UserAssist counts every program the user launches, ROT13'd.
+        base = (r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                r"\UserAssist")
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base) as root:
+                guides = []
+                index = 0
+                while True:
+                    try:
+                        guides.append(winreg.EnumKey(root, index))
+                    except OSError:
+                        break
+                    index += 1
+        except (FileNotFoundError, OSError):
+            guides = []
+
+        rot13 = str.maketrans(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+        )
+        for guid in guides:
+            path = rf"{base}\{guid}\Count"
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0,
+                                    winreg.KEY_ALL_ACCESS) as key:
+                    doomed = []
+                    index = 0
+                    while True:
+                        try:
+                            name, _value, _kind = winreg.EnumValue(key, index)
+                        except OSError:
+                            break
+                        if needle in name.translate(rot13).lower():
+                            doomed.append(name)
+                        index += 1
+                    for name in doomed:
+                        try:
+                            winreg.DeleteValue(key, name)
+                            removed += 1
+                        except OSError:
+                            pass
+            except (FileNotFoundError, OSError):
+                continue
+
+        if removed:
+            print(f"[UNINSTALL] Cleared {removed} Explorer cache entr(y/ies) naming Lumen.")
+        return 1 if removed else 0
+
     # ─── Child processes ─────────────────────────────────────────────────
     @staticmethod
     def _clean_env() -> dict:
@@ -1017,10 +1485,25 @@ del /f /q "%~f0" >nul 2>&1
         lines = [f"Removed from:  {target}"]
         if self._kept:
             lines.append(f"Kept in place: {', '.join(self._kept)}")
-        if self.purge_appdata_var.get():
-            lines.append("Reading data:  deleted, as you asked.")
+        if self.skip_save_var.get():
+            lines.append("Reading data:  erased, as you asked.")
         else:
-            lines.append(f"Reading data:  kept in {self._appdata_path()}")
+            counts = self._export_counts
+            lines.append(f"Reading data:  saved to {self._export_path}")
+            lines.append(
+                f"               {counts.get('positions', 0)} book positions, "
+                f"{counts.get('marks', 0)} marks/notes/quotes/tags"
+            )
+        lines.append("Configuration: erased — registry, caches and all settings.")
+
+        # Never let this screen imply more than was done. Windows keeps records
+        # of every program that has ever run (the Application event log, the
+        # prefetcher, Amcache) in stores that belong to the operating system,
+        # need administrator rights, and hold entries for thousands of unrelated
+        # programs. An uninstaller that rewrote them would be tampering with
+        # system forensics to flatter itself, so this one says so instead.
+        lines.append("Not touched:   Windows' own event log and prefetch records, "
+                     "which are the operating system's, not Lumen's.")
         lines.extend(f"Note: {n}" for n in notes)
         return lines
 
@@ -1040,8 +1523,9 @@ del /f /q "%~f0" >nul 2>&1
     def _show_error(self, detail: str) -> None:
         self._uninstalling = False
         for widget in (self.uninstall_btn, self.browse_btn, self.path_entry,
-                       self.purge_check):
+                       self.skip_check, self.save_entry):
             widget.config(state="normal")
+        self._sync_save_row()
         self.step_label.config(text="✗  Removal failed", fg=ERROR)
         where = f"\n\nA full log was written to:\n{LOG_PATH}" if LOG_PATH else ""
         messagebox.showerror(
@@ -1062,9 +1546,10 @@ def run_silent(argv: list[str]) -> int:
     """Remove Lumen without any UI. Returns a process exit code.
 
     Conservative by construction: it removes only what it can positively
-    identify as a Lumen installation, and it NEVER deletes reading data unless
-    ``/PURGEDATA`` is passed as well. An unattended run must not destroy
-    something a person would have been asked about.
+    identify as a Lumen installation, and it always EXPORTS the user's reading
+    data before erasing anything, because an unattended run must not destroy
+    something a person would have been asked about. ``/SAVETO=<dir>`` chooses
+    where; ``/NOSAVE`` opts out and is the only way to lose reading history.
     """
     print(f"{PRODUCT_NAME} silent uninstall  (argv={argv[1:]})")
 
@@ -1087,9 +1572,14 @@ def run_silent(argv: list[str]) -> int:
               f"installation. Nothing was deleted.")
         return 3
 
-    purge = any(a.upper() in ("/PURGEDATA", "--purge-data") for a in argv[1:])
+    skip_save = any(a.upper() in ("/NOSAVE", "--no-save") for a in argv[1:])
+    save_to = LumenUninstaller._default_save_dir()
+    for arg in argv[1:]:
+        if arg.upper().startswith("/SAVETO="):
+            save_to = arg[8:]
     print(f"Target       : {target}  (found via {source})")
-    print(f"Reading data : {'DELETE' if purge else 'keep'}")
+    print(f"Reading data : {'ERASE (/NOSAVE)' if skip_save else f'save to {save_to}'}")
+    print("Everything else (configuration, index, caches, registry): ERASE")
 
     # A tiny stand-in for the wizard: the pipeline is shared, only the progress
     # reporting differs. Building a real Tk root in a silent run would flash a
@@ -1097,10 +1587,14 @@ def run_silent(argv: list[str]) -> int:
     class _Headless(LumenUninstaller):
         def __init__(self) -> None:                      # noqa: D107
             self.version = resolve_version()
-            self.purge_appdata_var = _ConstantFlag(purge)
+            self.skip_save_var = _ConstantFlag(skip_save)
+            self.save_path = _ConstantFlag(save_to)
+            self.install_path = _ConstantFlag(target)
             self._uninstalling = True
             self._summary = []
             self._kept = []
+            self._export_path = ""
+            self._export_counts = {}
             self._progress_value = 0.0
             self.STEPS = LumenUninstaller.STEPS
 
@@ -1146,12 +1640,17 @@ def run_silent(argv: list[str]) -> int:
 
 
 class _ConstantFlag:
-    """A tk.BooleanVar stand-in for the headless run."""
+    """A tk variable stand-in for the headless run.
 
-    def __init__(self, value: bool):
-        self._value = bool(value)
+    Holds the value verbatim - it now backs a StringVar (the save folder, the
+    install path) as well as the original BooleanVar, and coercing a path
+    through ``bool()`` would turn it into ``True``.
+    """
 
-    def get(self) -> bool:
+    def __init__(self, value: Any):
+        self._value = value
+
+    def get(self) -> Any:
         return self._value
 
 

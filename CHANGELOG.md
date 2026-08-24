@@ -15,7 +15,41 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Uninstalling is now total.** The uninstaller used to keep
+  `%APPDATA%\Lumen Reader` unless the user ticked a box, which meant an
+  uninstall left every setting, the whole library index and the entire
+  configuration behind — the opposite of what the word means. It now erases
+  everything Lumen ever wrote, with no opt-out: state, configuration, index,
+  caches, file associations, and every key under `HKEY_CURRENT_USER`,
+  including the Explorer `MUICache` and `UserAssist` entries that name
+  `Lumen.exe`.
+- **…and the user's reading is taken out first.** Step 0 of the uninstall now
+  *exports* reading positions plus every mark, note, quote and tag into one
+  plain JSON file, in a folder the user chooses — defaulting to the real
+  Desktop, resolved through `User Shell Folders` so a OneDrive-redirected
+  Desktop is honoured instead of an empty `~\Desktop`. The export is read back
+  off disk and its position count checked **before** the first deletion; if it
+  cannot be verified the uninstall aborts with everything still in place.
+  Configuration keys are deliberately excluded from the export, or an uninstall
+  would hand back exactly what it was asked to destroy.
+- **Silent mode follows the same promise.** `/PURGEDATA` is gone. An unattended
+  run exports by default; `/SAVETO=<dir>` chooses where and `/NOSAVE` is the
+  only way to lose reading history.
+
+### Kept, deliberately
+
+- A **non-empty `library` folder** inside the install directory. Lumen never
+  puts books there, but a user might have, and erasing our own traces must
+  never erase somebody's library.
+- **Windows' own event log, prefetch and Amcache records.** They are the
+  operating system's, cover thousands of unrelated programs and need
+  administrator rights. The summary says so rather than implying a cleanliness
+  the wizard did not achieve.
+
 ### Added
+
 
 - **`lumen_reader/machine_profile.py`** — Lumen now asks what machine it is on
   before deciding what to run on it: logical processors (affinity-limited),

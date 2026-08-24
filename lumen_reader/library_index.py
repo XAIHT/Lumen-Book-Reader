@@ -35,6 +35,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import shutil
 import sqlite3
 import time
 import zipfile
@@ -49,6 +50,22 @@ BOOK_SUFFIXES = {".epub", ".pdf"}
 #: subject matter are overwhelmingly decided in the front matter, so a bounded
 #: head keeps the index proportionate to the shelf instead of to the corpus.
 DEFAULT_TEXT_BUDGET = 250_000
+
+#: Free space the volume keeps no matter what Lumen wants to do on it.  A
+#: system drive that reaches zero cannot page, and the symptom is not a failed
+#: query - it is a machine that stops responding.  4 GB is chosen to survive a
+#: full pagefile growth on a 16 GB machine, not to be a round number.
+SAFETY_FLOOR_BYTES = 4 * 1024 ** 3
+
+#: One bounded FTS5 merge step.  ``('merge', N)`` merges at most N pages and
+#: returns, so peak WAL is a function of N rather than of the whole index.
+INCREMENTAL_MERGE_PAGES = 256
+
+#: How many bounded rounds per table.  The command stops doing work once the
+#: index is merged, so this is an upper bound on effort, not a target: the
+#: point is to reclaim most of what a full merge would without ever holding
+#: the entire index in one uncommitted transaction.
+INCREMENTAL_MERGE_ROUNDS = 8
 
 #: How many opening pages may come back with no text at all before a PDF is
 #: taken to have no text layer.  Generous enough for a cover, front matter and
@@ -119,6 +136,33 @@ class ScanProgress:
     done: int = 0
     total: int = 0
     detail: str = ""
+
+
+@dataclass(slots=True)
+class OptimizeReport:
+    """What ``optimize`` did, and what it declined to do.
+
+    Exists so the Configuration window can say "compacting needs 15 GB and you
+    have 16" instead of silently doing less than the button promised.  A
+    maintenance action that quietly downgrades itself reads as a bug the next
+    time someone checks the file size.
+    """
+
+    merged_fully: bool
+    vacuumed: bool
+    before: int
+    after: int
+    free_before: int
+    needed: int
+
+    @property
+    def reclaimed(self) -> int:
+        return max(0, self.before - self.after)
+
+    @property
+    def deferred(self) -> bool:
+        """True when the disk, not the index, decided what happened."""
+        return not (self.merged_fully and self.vacuumed)
 
 
 # ───────────────────────────── text helpers ───────────────────────────────
@@ -858,23 +902,98 @@ class LibraryIndex:
         self.connection.commit()
         return len(paths)
 
-    def optimize(self) -> None:
-        """Compact the FTS indexes and the database file itself.
+    def free_bytes(self) -> int:
+        """Free space on the volume holding the index, or -1 if unknowable.
+
+        Unknown is NOT treated as empty: a volume we cannot measure gets the
+        cheap path, never the one that needs gigabytes it might not have.
+        """
+        try:
+            return shutil.disk_usage(self.path.parent).free
+        except OSError:
+            return -1
+
+    def optimize(self) -> OptimizeReport:
+        """Compact the FTS indexes and the database file itself - within budget.
+
+        This used to be three unconditional statements, and on a real library it
+        was a way to take the whole machine down.  Both of the expensive ones
+        are sized by the DATABASE, not by the work outstanding:
+
+        * ``INSERT INTO t(t) VALUES('optimize')`` is an FTS5 *full* merge.  It
+          rewrites every segment into one, in a SINGLE transaction, so the WAL
+          grows to the size of the entire text index before it can commit.
+        * ``VACUUM`` writes a complete second copy of the database and only then
+          deletes the original.
+
+        Measured here: an 11.15 GB index with 2.16 GB of WAL on a system drive
+        with 16 GB free.  The full merge alone wants ~10 GB and the VACUUM
+        another ~11 GB, so the pair cannot fit - and a Windows system volume at
+        zero free space stops being able to page, which is not a failed query,
+        it is a stopped computer.  Neither statement fails cleanly when the disk
+        fills; that is why this asks *first* rather than catching afterwards.
+
+        So both are now gated on measured headroom, and when the room is not
+        there the work still happens - just incrementally.  ``('merge', N)``
+        does bounded work per call and converges, which reclaims most of what a
+        full merge would at a fraction of the peak.  The checkpoint is always
+        safe and always runs: it is what gives the WAL back.
 
         ``VACUUM`` cannot run inside a transaction, and sqlite3 opens one
         implicitly for anything that writes, so the isolation level is dropped
         for the duration rather than letting the call fail.
         """
-        self.connection.execute("INSERT INTO books_fts(books_fts) VALUES('optimize')")
-        self.connection.execute("INSERT INTO content_fts(content_fts) VALUES('optimize')")
-        self.connection.commit()
+        before = self.database_bytes()
+        free = self.free_bytes()
+
+        # Headroom for the big two, plus a floor the volume keeps regardless.
+        # The floor is not politeness: it is the difference between a slow
+        # uninstall and an operating system that cannot page.
+        needed = before + SAFETY_FLOOR_BYTES
+        roomy = free < 0 or free >= needed
+
+        merged_fully = False
+        if roomy and free >= 0:
+            self.connection.execute("INSERT INTO books_fts(books_fts) VALUES('optimize')")
+            self.connection.execute("INSERT INTO content_fts(content_fts) VALUES('optimize')")
+            self.connection.commit()
+            merged_fully = True
+        else:
+            # Bounded, repeatable, and it stops when there is nothing left to
+            # do.  Committing and checkpointing between rounds is what keeps the
+            # WAL from growing into the very problem being avoided.
+            for table in ("books_fts", "content_fts"):
+                for _round in range(INCREMENTAL_MERGE_ROUNDS):
+                    self.connection.execute(
+                        f"INSERT INTO {table}({table}, rank) VALUES('merge', ?)",
+                        (INCREMENTAL_MERGE_PAGES,),
+                    )
+                    self.connection.commit()
+                    self.connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+
+        vacuumed = False
         previous = self.connection.isolation_level
         try:
             self.connection.isolation_level = None
-            self.connection.execute("VACUUM")
+            if roomy:
+                self.connection.execute("VACUUM")
+                vacuumed = True
+            # Always. This is the cheap one, it needs no headroom, and on an
+            # index left mid-flight by a killed process it is the single
+            # biggest thing that gives disk space back.
             self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             self.connection.isolation_level = previous
+
+        after = self.database_bytes()
+        return OptimizeReport(
+            merged_fully=merged_fully,
+            vacuumed=vacuumed,
+            before=before,
+            after=after,
+            free_before=free,
+            needed=needed,
+        )
 
     def database_bytes(self) -> int:
         total = 0

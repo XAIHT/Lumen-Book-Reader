@@ -117,9 +117,20 @@ version history* records the two places where this has already gone wrong.
   `tests/test_machine_profile.py` injects the machine instead of detecting it,
   so low-end behaviour stays pinned on hardware this machine does not have.
 - **User data is sacred; the index is not.** `library-index.db` in
-  `%APPDATA%\Lumen Reader` is a rebuildable cache. Reading positions, notes,
-  quotes, tags and `lumen-reading-marks.json` are not — they survive uninstall
-  unless the user explicitly asks otherwise, and books on disk are never touched.
+  `%APPDATA%\Lumen Reader` is a rebuildable cache, and so is every setting
+  beside it. Reading positions, notes, quotes, tags and
+  `lumen-reading-marks.json` are not, and books on disk are never touched.
+- **Uninstalling is total, and the reading leaves first.** Since v1.4.1 the
+  uninstaller erases everything Lumen ever wrote — configuration, index,
+  caches, associations and every `HKCU` key — with no opt-out. The user's
+  reading survives only because step 0 *exports* it (positions plus marks,
+  notes, quotes and tags) to a folder they choose, verifies the file by reading
+  it back, and only then lets the deletion begin. That order is the safety
+  property: `tests/test_release_scheme.py` fails the build if any destructive
+  step is ever reordered above the export. The two exceptions to "total" are a
+  non-empty `library` folder holding real books, and Windows' own event log and
+  prefetch records — which belong to the OS, not to Lumen, and are reported as
+  kept rather than quietly rewritten.
 - **Fail-safe, never fail-open.** `preserved_user_state.json` is read by three
   programs, each with a built-in fallback. Keeping a file by mistake is
   recoverable; deleting a user's settings because JSON did not parse is not.

@@ -220,6 +220,13 @@ Every single thing the installer writes, the uninstaller removes:
 | `CreateShortcut.ps1` | `RemoveShortcut.ps1` |
 | `register_associations.ps1` | `unregister_associations.ps1` |
 | refresh the shell | refresh the shell |
+| — | **export the user's reading, then erase everything else** |
+
+The last row has no counterpart on the install side, and that is the point.
+Since v1.4.1 an uninstall is *total*: configuration, the library index, every
+cache and every `HKCU` key go without asking, because an uninstall that leaves
+the whole configuration behind is not an uninstall. What survives does so by
+being **taken out first** — see *User state* below.
 
 **`tests/test_release_scheme.py` is the enforcement.** It fails if a ProgID is
 registered but never unregistered, if the two wizards disagree about the
@@ -260,9 +267,39 @@ fail-open:** keeping a file by mistake is recoverable; deleting a user's
 settings because a JSON file did not parse is not.
 
 Reading positions, bookmarks, notes and tags live in
-`%APPDATA%\Lumen Reader`, outside the installation. They **survive an
-uninstall** unless the user explicitly ticks the box. Books are never touched,
-ever.
+`%APPDATA%\Lumen Reader`, outside the installation. That folder is now
+**erased unconditionally** — but not before its contents are rescued.
+
+The uninstaller runs in this order, and the order *is* the safety property:
+
+1. **Ask.** The wizard offers a folder (defaulting to the real Desktop, read
+   from `User Shell Folders` so a OneDrive redirect is honoured) and a
+   deliberate opt-out. Silent mode takes `/SAVETO=<dir>` and `/NOSAVE`.
+2. **Export.** Positions from `reader-state.json` plus every
+   `lumen-reading-marks.json` it can find, into one plain JSON file. The
+   *configuration* keys in `reader-state.json` — theme, fonts, `scan`,
+   `search`, `accel` — are deliberately left out, or the uninstall would smuggle
+   back out exactly what it was asked to destroy.
+3. **Verify.** The file is read back off disk and its position count compared
+   before anything is deleted. A full disk or a quarantining antivirus produces
+   a plausible success and an unusable file, and by then the original is gone.
+4. **Erase.** Only now: files, registry, state, caches, and the Explorer
+   MUICache/UserAssist entries that name `Lumen.exe`.
+
+`test_uninstall_exports_reading_data_before_it_deletes_anything` fails the build
+if any destructive step is ever reordered above the export, and
+`tests/test_uninstall_export.py` holds the export itself to that standard.
+
+Two things are still kept, and both are stated out loud in the summary rather
+than quietly skipped:
+
+* **A non-empty `library` folder inside the install directory.** Lumen never
+  puts books there, but a user might have. Erasing our own traces must never
+  erase somebody's library.
+* **Windows' own event log, prefetch and Amcache records.** They belong to the
+  operating system, hold entries for thousands of unrelated programs, and need
+  administrator rights. An uninstaller that rewrote them would be tampering
+  with system forensics to flatter itself. Books are never touched, ever.
 
 `library-index.db` lives in that same folder and is covered by the same
 `appdata_dirs` entry, but it is in a different category from everything else

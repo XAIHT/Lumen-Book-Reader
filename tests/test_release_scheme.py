@@ -540,14 +540,58 @@ def test_quiet_uninstall_string_is_backed_by_a_real_silent_mode():
 
 
 def test_silent_mode_never_deletes_reading_data_by_default():
-    """An unattended run must not destroy something a person would be asked about."""
+    """An unattended run must not destroy something a person would be asked about.
+
+    Uninstalling is now total - configuration, index, caches and registry all
+    go without asking - so this invariant moved rather than disappearing: the
+    reading data is EXPORTED first, and losing it requires an explicit
+    ``/NOSAVE``. The guard is the same promise against a different mechanism.
+    """
     source = (ROOT / "uninstall.py").read_text(encoding="utf-8")
     silent = source.split("def run_silent", 1)[1].split("class _ConstantFlag", 1)[0]
-    assert "PURGEDATA" in silent, "there is no opt-in flag for deleting reading data"
-    assert "purge = any(" in silent
+    assert "NOSAVE" in silent, "there is no opt-out flag for erasing reading data"
+    assert "skip_save = any(" in silent
+    assert "SAVETO=" in silent, "an unattended run cannot choose where to save"
+    # Opting out has to be deliberate: the default must be to save.
+    assert "skip_save_var = _ConstantFlag(skip_save)" in silent
     # And it must refuse a folder it cannot identify as Lumen.
     assert "REFUSING" in silent
     assert "looks_right" in silent
+
+
+def test_uninstall_exports_reading_data_before_it_deletes_anything():
+    """Order is the whole safety property: ASK, EXPORT, VERIFY, THEN ERASE.
+
+    If the export ever slides below the first deletion, a failed write hands
+    the user an empty file after their history is already gone - the one
+    outcome in this wizard that cannot be undone.
+    """
+    source = (ROOT / "uninstall.py").read_text(encoding="utf-8")
+    runner = source.split("def _run_uninstall", 1)[1].split("def _keep_names", 1)[0]
+
+    export_at = runner.index("_export_reading_data")
+    for destructive in ("RemoveShortcut.ps1", "_remove_files", "_erase_all_traces",
+                        "_delete_registry_tree"):
+        assert export_at < runner.index(destructive), (
+            f"{destructive} runs before the reading-data export; a failed "
+            f"export would then destroy the only copy"
+        )
+
+    # The export must be read back before it is trusted.
+    exporter = source.split("def _export_reading_data", 1)[1].split("\n    # ─", 1)[0]
+    assert "_read_json(path)" in exporter, "the export is never verified on disk"
+    assert "raise OSError" in exporter, "a bad export must abort the uninstall"
+
+
+def test_total_erasure_covers_every_surface_the_installer_creates():
+    """Whatever the installer writes, the eraser must name."""
+    source = (ROOT / "uninstall.py").read_text(encoding="utf-8")
+    eraser = source.split("def _erase_all_traces", 1)[1].split("@staticmethod", 1)[0]
+    for surface in ("ARP_KEY", "DISCOVERY_KEY", "APPDATA_DIR_NAME",
+                    "App Paths", "_purge_associations_via_winreg"):
+        assert surface in eraser, f"total erasure never touches {surface}"
+    # Books are the one thing it must not reach for.
+    assert "_protects_export" in eraser, "the export can be erased with the state"
 
 
 def test_silent_mode_refuses_an_unidentified_folder(tmp_path, capsys, monkeypatch):
