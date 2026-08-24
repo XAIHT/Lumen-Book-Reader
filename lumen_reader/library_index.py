@@ -682,6 +682,14 @@ class LibraryIndex:
         self.connection.execute("PRAGMA synchronous=NORMAL")
         self.connection.execute("PRAGMA temp_store=MEMORY")
         self.connection.execute("PRAGMA cache_size=-131072")  # 128 MB page cache
+        # A sweep killed mid-flight leaves its write-ahead log behind, and
+        # nothing ever truncated it: a real index here reached 10.4 GB with a
+        # 2.0 GB WAL beside it.  Opening that database replays the whole log
+        # before ``__init__`` returns - and ``main`` builds the index *before*
+        # it builds the window, so the reader saw no window at all for minutes.
+        # Cap the log instead, so recovery stays bounded however a scan ended.
+        self.connection.execute("PRAGMA wal_autocheckpoint=2000")       # ~8 MB
+        self.connection.execute("PRAGMA journal_size_limit=268435456")  # 256 MB
         # Migration comes first, and must: SCHEMA builds an index over
         # ``seen_gen``, and ``CREATE INDEX`` on a column that an older database
         # does not have is a hard error - one that stopped Lumen from starting
