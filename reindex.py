@@ -89,13 +89,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  library : {root}")
     print(f"  index   : {database}")
     print(f"  text    : {'off' if arguments.no_text else f'{arguments.budget:,} chars/book'}")
-    print(f"  workers : {arguments.workers or 'all cores'}\n")
+    print(f"  workers : {arguments.workers or 'auto (machine-aware)'}\n")
 
     last_line = ""
+    terminal_phase = ""
     started = time.perf_counter()
 
     def report(update: ScanProgress) -> None:
-        nonlocal last_line
+        nonlocal last_line, terminal_phase
+        terminal_phase = update.phase
         if update.phase == "walk":
             line = f"  walking…  {update.detail}"
         elif update.phase == "extract":
@@ -106,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
             line = f"  [{bar}] {share * 100:5.1f}%  {update.detail}  ({rate:,.0f} books/s)"
         elif update.phase == "error":
             line = f"  ERROR: {update.detail}"
+        elif update.phase == "partial":
+            line = f"  INCOMPLETE: {update.detail}"
         else:
             line = f"  done: {update.detail}"
         if line != last_line:
@@ -129,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  ON DISK     : {human_bytes(counts.bytes_total)}")
     print(f"  FULL-TEXT   : {counts.with_text:,} books searchable by topic")
     print(f"  ─────────────────────────────────────────────────────\n")
-    return 0
+    return 2 if terminal_phase in {"error", "partial"} else 0
 
 
 if __name__ == "__main__":

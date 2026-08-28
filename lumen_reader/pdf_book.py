@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 import pymupdf
 
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
+from .text_safety import clean_unicode_text
 
 
 class PdfError(ValueError):
@@ -24,10 +25,6 @@ class PdfPasswordRequired(PdfError):
     """Raised when a PDF requires a password that was not accepted."""
 
 
-_SPACE_RE = re.compile(r"\s+")
-_INVALID_TEXT_RE = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff\ufffd]+"
-)
 _SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([,.;:!?])")
 _MAX_RENDER_EDGE = 4096
 _TARGET_RENDER_SCALE = 2.25
@@ -40,8 +37,7 @@ def _clean_text(value: str | None) -> str:
     # those invalid Unicode scalars with visible replacement glyphs. Remove
     # invalid code points at the PDF boundary so metadata, outline titles, and
     # selectable text remain safe to render and persist as UTF-8.
-    cleaned = _INVALID_TEXT_RE.sub(" ", value or "")
-    cleaned = _SPACE_RE.sub(" ", cleaned).strip()
+    cleaned = clean_unicode_text(value)
     return _SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", cleaned)
 
 

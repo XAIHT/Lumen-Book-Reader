@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 from xml.etree import ElementTree as ET
 
+from .text_safety import clean_unicode_text, require_utf8
+
 BOOK_SUFFIXES = {".epub", ".pdf"}
 
 #: How much extracted text is indexed per book for topic search.  Topic and
@@ -56,6 +58,11 @@ DEFAULT_TEXT_BUDGET = 250_000
 #: query - it is a machine that stops responding.  4 GB is chosen to survive a
 #: full pagefile growth on a 16 GB machine, not to be a round number.
 SAFETY_FLOOR_BYTES = 4 * 1024 ** 3
+
+#: The same ceiling configured through ``PRAGMA journal_size_limit``.  Keeping
+#: it named lets interrupted-sweep recovery explain when a retained WAL is
+#: unusually large instead of making the next launch look mysteriously slow.
+JOURNAL_SIZE_LIMIT_BYTES = 256 * 1024 ** 2
 
 #: One bounded FTS5 merge step.  ``('merge', N)`` merges at most N pages and
 #: returns, so peak WAL is a function of N rather than of the whole index.
@@ -83,7 +90,6 @@ SKIP_DIRECTORIES = {
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _DROP_RE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
-_SPACE_RE = re.compile(r"\s+")
 _FTS_SAFE_RE = re.compile(r"[^\w\s'-]", re.UNICODE)
 
 
@@ -177,13 +183,11 @@ def strip_markup(markup: str) -> str:
     """Flatten XHTML into indexable prose."""
     without_code = _DROP_RE.sub(" ", markup)
     text = _TAG_RE.sub(" ", without_code)
-    return _SPACE_RE.sub(" ", html.unescape(text)).strip()
+    return clean_unicode_text(html.unescape(text))
 
 
 def _clean(value: Any) -> str:
-    if not value:
-        return ""
-    return _SPACE_RE.sub(" ", str(value)).strip()
+    return clean_unicode_text(value)
 
 
 # ──────────────────────── per-book extraction (workers) ────────────────────
@@ -309,7 +313,7 @@ def _pdf_record(path: Path, text_budget: int, page_cap: int = 0) -> dict[str, An
                 if budget <= 0 or (page_cap and number >= page_cap):
                     break
                 try:
-                    text = _SPACE_RE.sub(" ", page.get_text()).strip()
+                    text = _clean(page.get_text())
                 except Exception:
                     continue
                 if not text:
@@ -354,12 +358,16 @@ def extract_book(job: Sequence[Any]) -> dict[str, Any]:
         "error": "",
     }
     try:
-        record = (_pdf_record(path, text_budget, page_cap) if suffix == ".pdf"
-                  else _epub_record(path, text_budget))
+        if suffix == ".pdf":
+            record = _pdf_record(path, text_budget, page_cap)
+        elif suffix == ".epub":
+            record = _epub_record(path, text_budget)
+        else:
+            raise ValueError(f"unsupported book format: {suffix or '<none>'}")
     except Exception as exception:  # a broken book must never kill the pool
         result["ok"] = False
-        result["error"] = f"{type(exception).__name__}: {exception}"[:400]
-        result["title"] = path.stem
+        result["error"] = _clean(f"{type(exception).__name__}: {exception}")[:400]
+        result["title"] = _clean(path.stem)
         return result
 
     result["title"] = record.get("title") or path.stem
@@ -370,6 +378,17 @@ def extract_book(job: Sequence[Any]) -> dict[str, Any]:
     result["description"] = record.get("description", "")
     result["pages"] = int(record.get("pages") or 0)
     result["body"] = record.get("body", "")
+    repaired: list[str] = []
+    for field in ("title", "author", "publisher", "language", "subjects",
+                  "description", "body", "error"):
+        original = "" if result.get(field) is None else str(result.get(field))
+        cleaned = _clean(original)
+        if cleaned != original:
+            repaired.append(field)
+        result[field] = cleaned
+    if repaired:
+        result["sanitized_fields"] = tuple(repaired)
+    require_utf8(result["path"], label="book path")
     return result
 
 
@@ -447,7 +466,13 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     indexed     INTEGER NOT NULL DEFAULT 0,
     skipped     INTEGER NOT NULL DEFAULT 0,
     failed      INTEGER NOT NULL DEFAULT 0,
-    cancelled   INTEGER NOT NULL DEFAULT 0
+    cancelled   INTEGER NOT NULL DEFAULT 0,
+    status      TEXT    NOT NULL DEFAULT 'done',
+    error       TEXT    NOT NULL DEFAULT '',
+    extracted   INTEGER NOT NULL DEFAULT 0,
+    committed   INTEGER NOT NULL DEFAULT 0,
+    rejected    INTEGER NOT NULL DEFAULT 0,
+    unaccounted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS scan_runs_root ON scan_runs(root, finished_at DESC);
 
@@ -689,7 +714,7 @@ class LibraryIndex:
         # it builds the window, so the reader saw no window at all for minutes.
         # Cap the log instead, so recovery stays bounded however a scan ended.
         self.connection.execute("PRAGMA wal_autocheckpoint=2000")       # ~8 MB
-        self.connection.execute("PRAGMA journal_size_limit=268435456")  # 256 MB
+        self.connection.execute(f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT_BYTES}")
         # Migration comes first, and must: SCHEMA builds an index over
         # ``seen_gen``, and ``CREATE INDEX`` on a column that an older database
         # does not have is a hard error - one that stopped Lumen from starting
@@ -710,14 +735,36 @@ class LibraryIndex:
         existing = self.connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'books'"
         ).fetchone()
-        if existing is None:
-            return                      # a fresh database: SCHEMA builds it correctly
-        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(books)")}
-        if "seen_gen" not in columns:
-            self.connection.execute(
-                "ALTER TABLE books ADD COLUMN seen_gen INTEGER NOT NULL DEFAULT 0"
-            )
-            self.connection.commit()
+        if existing is not None:
+            columns = {
+                row["name"] for row in self.connection.execute("PRAGMA table_info(books)")
+            }
+            if "seen_gen" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE books ADD COLUMN seen_gen INTEGER NOT NULL DEFAULT 0"
+                )
+
+        scan_runs = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scan_runs'"
+        ).fetchone()
+        if scan_runs is not None:
+            columns = {
+                row["name"] for row in self.connection.execute("PRAGMA table_info(scan_runs)")
+            }
+            additions = {
+                "status": "TEXT NOT NULL DEFAULT 'done'",
+                "error": "TEXT NOT NULL DEFAULT ''",
+                "extracted": "INTEGER NOT NULL DEFAULT 0",
+                "committed": "INTEGER NOT NULL DEFAULT 0",
+                "rejected": "INTEGER NOT NULL DEFAULT 0",
+                "unaccounted": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, declaration in additions.items():
+                if name not in columns:
+                    self.connection.execute(
+                        f"ALTER TABLE scan_runs ADD COLUMN {name} {declaration}"
+                    )
+        self.connection.commit()
 
     def _adopt_fresh_database(self) -> None:
         """A brand-new index is born with its rowid map already correct.
@@ -819,6 +866,14 @@ class LibraryIndex:
         if progress is not None:
             if state.error:
                 progress(ScanProgress("error", detail=state.error))
+            elif state.phase == "partial":
+                done = state.books_indexed + state.books_failed
+                progress(ScanProgress(
+                    "partial",
+                    done,
+                    max(done, state.books_found - state.books_unchanged),
+                    f"{done:,} committed; {state.books_pending:,} will be retried",
+                ))
             else:
                 done = state.books_indexed + state.books_failed
                 detail = f"{done:,} indexed" if emitted_extract else "index already current"
@@ -868,14 +923,26 @@ class LibraryIndex:
         skipped: int,
         failed: int,
         cancelled: bool = False,
+        status: str = "done",
+        error: str = "",
+        extracted: int | None = None,
+        committed: int | None = None,
+        rejected: int = 0,
+        unaccounted: int = 0,
     ) -> None:
         """Remember how the sweep went, for the configuration window to show."""
         root_key = root if isinstance(root, str) and os.path.normcase(root) == root else normalize_root(root)
+        status_text = clean_unicode_text(status) or ("cancelled" if cancelled else "done")
+        error_text = clean_unicode_text(error)[:1000]
+        extracted_count = max(0, int(indexed + failed if extracted is None else extracted))
+        committed_count = max(0, int(indexed + failed if committed is None else committed))
         self.connection.execute(
             "INSERT INTO scan_runs (root, generation, finished_at, seconds, found, indexed,"
-            " skipped, failed, cancelled) VALUES (?,?,?,?,?,?,?,?,?)",
+            " skipped, failed, cancelled, status, error, extracted, committed, rejected,"
+            " unaccounted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (root_key, generation, time.time(), seconds, found, indexed, skipped, failed,
-             1 if cancelled else 0),
+             1 if cancelled else 0, status_text, error_text, extracted_count,
+             committed_count, max(0, int(rejected)), max(0, int(unaccounted))),
         )
         self.connection.execute(
             "DELETE FROM scan_runs WHERE root = ? AND id NOT IN ("
@@ -890,6 +957,60 @@ class LibraryIndex:
             "SELECT * FROM scan_runs WHERE root = ? ORDER BY finished_at DESC LIMIT 1", (root_key,)
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def recover_wal(self, progress: Callable[[str], None] | None = None) -> dict[str, int | bool]:
+        """Checkpoint an oversized WAL left by an interrupted sweep.
+
+        WAL is recovery data, not corruption.  A passive checkpoint first moves
+        every currently safe frame into the main database; truncation is tried
+        only when SQLite reports no reader/writer contention.  The operation is
+        idempotent and never deletes the database or user-owned books.
+        """
+
+        wal_path = Path(f"{self.path}-wal")
+        before = wal_path.stat().st_size if wal_path.exists() else 0
+        report: dict[str, int | bool] = {
+            "before": before,
+            "after": before,
+            "busy": 0,
+            "checkpointed": 0,
+            "truncated": False,
+        }
+        if before <= JOURNAL_SIZE_LIMIT_BYTES:
+            return report
+
+        if progress is not None:
+            progress(
+                f"Recovering {before / 1024 ** 3:,.2f} GiB left by an interrupted "
+                "index write…"
+            )
+        busy, _frames, checkpointed = self.connection.execute(
+            "PRAGMA wal_checkpoint(PASSIVE)"
+        ).fetchone()
+        report["busy"] = int(busy or 0)
+        report["checkpointed"] = int(checkpointed or 0)
+        if not busy:
+            truncate_busy, _truncate_frames, truncate_checkpointed = self.connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            report["busy"] = int(truncate_busy or 0)
+            report["checkpointed"] = max(
+                int(report["checkpointed"]), int(truncate_checkpointed or 0)
+            )
+            report["truncated"] = not bool(truncate_busy)
+        report["after"] = wal_path.stat().st_size if wal_path.exists() else 0
+        if progress is not None:
+            if report["truncated"]:
+                progress(
+                    f"Interrupted-write recovery complete; WAL reduced to "
+                    f"{int(report['after']) / 1024 ** 2:,.1f} MiB."
+                )
+            else:
+                progress(
+                    "WAL recovery copied safe frames, but an active database reader "
+                    "deferred truncation."
+                )
+        return report
 
     # ── maintenance ────────────────────────────────────────────────────────
 

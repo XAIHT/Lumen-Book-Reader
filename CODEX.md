@@ -10,6 +10,24 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.1 Post-audit sweep-hang remediation — 2026-08-28
+
+This living update records the v1.5.1 repair made after an installed sweep stopped at 800/2,881 changed books. The observed writer exception was `UnicodeEncodeError: surrogates not allowed`; the exact malformed PDF title was `001.jpg\udcc0\udc80`. Once the only writer thread exited, the bounded result queue filled, all 20 extractor processes blocked publishing, and their old telemetry incorrectly said `waiting for a book`. These are the implemented changes, not future proposals:
+
+| File | Major/minor implementation detail | Failure now contained by |
+|---|---|---|
+| `lumen_reader/text_safety.py` | New shared scalar/control sanitizer, strict UTF-8 validator, and log-safe escaping. | Invalid PDF/EPUB text cannot reach Qt, JSON, SQLite, or FTS5 as a lone surrogate. |
+| `lumen_reader/library_index.py` | Cleans every extracted field; rejects unknown formats; migrates and writes extended `scan_runs`; checkpoints oversized retained WAL. | Malformed document text becomes safe data; terminal failures leave durable status/counts; interrupted journals are recovered visibly. |
+| `lumen_reader/turbo_scan.py` | Cancellation-aware result puts; idle/busy/publishing/stopped telemetry; fatal-stage propagation; bounded joins; per-record savepoints/fallbacks; post-commit counters. | A dead writer releases producers; one bad record cannot poison a batch; operational DB failures cannot be swallowed; displayed work equals committed work. |
+| `lumen_reader/scan_monitor.py` | Publishing and failing states are visible; `READ NOW` is replaced by `INDEXED OK`; progress says committed. | The UI no longer depicts blocked publishers as idle or releases the scanner before cleanup ends. |
+| `lumen_reader/settings_dialog.py` | Configuration now offers only EPUB/PDF, matching actual extractors. | MOBI/DJVU/CBZ cannot be silently routed through the EPUB parser and falsely indexed. |
+| `lumen_reader/book.py` / `pdf_book.py` | Both reading surfaces use the same Unicode boundary as the index. | Renderer and index no longer disagree about which malformed scalars are safe. |
+| `tests/test_library_index.py` | Exact-surrogate extraction, unsupported format, scan-history migration, and WAL recovery regressions. | The document-boundary and recovery contracts are executable. |
+| `tests/test_turbo_scan.py` | Exact installed failure, data-error fallback, fatal-writer fleet release, and extension filtering regressions. | The original deadlock signature and every new shutdown/accounting invariant are pinned. |
+| `pyproject.toml` / `README.md` / `CHANGELOG.md` | Patch identity advanced to 1.5.1 and its remediation is recorded separately from the immutable 1.5.0 history. | Source fallback, public badge, runtime, and release artifact agree. |
+
+Eight initial focused cases passed visibly with one Tlamatini Shoter full-desktop photograph per case. The first complete suite passed 358/358 with 358 additional per-test photographs in 436.094 seconds. After rejected-record accounting was strengthened, five affected cases passed and the complete 359-test state passed again in 424.535 seconds with 359 new photographs. Four presentation/terminal cases then pinned incomplete-state wording, followed by three photographed version-surface cases and a photographed strict compile of every changed Python module. The current 360-test collection differs from that complete run by the one passing shelf presentation regression only. The baseline statistics below intentionally remain the immutable v1.5.0 audit snapshot; this section is the forward ledger rather than a rewritten history.
+
 ## 1. Audit baseline and repository facts
 
 | Fact | Verified value | Engineering significance |

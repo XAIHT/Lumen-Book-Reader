@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 from bs4 import BeautifulSoup, Tag
 
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
+from .text_safety import clean_unicode_text
 
 
 class EpubError(ValueError):
@@ -24,7 +25,6 @@ class EpubError(ValueError):
 
 
 _MAX_UNCOMPRESSED_SIZE = 512 * 1024 * 1024
-_SPACE_RE = re.compile(r"\s+")
 _UNSAFE_TAGS = {
     "script",
     "iframe",
@@ -44,7 +44,7 @@ def _local_name(tag: str) -> str:
 
 
 def _clean_text(value: str | None) -> str:
-    return _SPACE_RE.sub(" ", value or "").strip()
+    return clean_unicode_text(value)
 
 
 def _normalized_href(base: str, href: str) -> str:

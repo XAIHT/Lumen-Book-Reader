@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 import zipfile
 from pathlib import Path
 
 import pytest
 
+from lumen_reader import library_index
 from lumen_reader.library_index import (
     LibraryIndex,
     build_match_expression,
@@ -150,6 +152,44 @@ def test_pdf_metadata_and_text_are_extracted(tmp_path: Path) -> None:
     assert record["title"] == "Gamma Report"
     assert record["pages"] == 1
     assert "detonation" in record["body"]
+
+
+def test_pdf_lone_surrogates_are_repaired_at_the_extraction_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "malformed.pdf"
+    path.touch()
+
+    def malformed_pdf(_path, _budget, _cap):
+        return {
+            "title": "001.jpg\udcc0\udc80",
+            "authors": ["Author\ud800"],
+            "subjects": [],
+            "publisher": "",
+            "language": "",
+            "description": "",
+            "pages": 1,
+            "body": "valid prose\udfff",
+        }
+
+    monkeypatch.setattr(library_index, "_pdf_record", malformed_pdf)
+    record = extract_book((str(path), ".pdf", 1000, 0))
+
+    assert record["ok"] is True
+    assert record["title"] == "001.jpg"
+    assert record["author"] == "Author"
+    assert record["body"] == "valid prose"
+    assert set(record["sanitized_fields"]) == {"author", "body", "title"}
+    for field in ("title", "author", "body"):
+        record[field].encode("utf-8", "strict")
+
+
+def test_an_unsupported_format_is_a_failed_record_not_a_false_success(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.mobi"
+    path.touch()
+    record = extract_book((str(path), ".mobi", 1000))
+    assert record["ok"] is False
+    assert "unsupported book format" in record["error"]
 
 
 # ────────────────────────────── query parser ──────────────────────────────
@@ -346,6 +386,43 @@ def test_upgrading_adds_the_generation_column(tmp_path: Path) -> None:
         columns = {row["name"] for row in index.connection.execute("PRAGMA table_info(books)")}
         assert "seen_gen" in columns
         assert index.next_generation(tmp_path) == 1
+
+
+def test_upgrading_scan_history_adds_failure_accounting_columns(tmp_path: Path) -> None:
+    database = tmp_path / "old-history.db"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """CREATE TABLE scan_runs (
+            id INTEGER PRIMARY KEY, root TEXT NOT NULL, generation INTEGER NOT NULL,
+            finished_at REAL NOT NULL, seconds REAL NOT NULL DEFAULT 0,
+            found INTEGER NOT NULL DEFAULT 0, indexed INTEGER NOT NULL DEFAULT 0,
+            skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+            cancelled INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    connection.commit()
+    connection.close()
+
+    with LibraryIndex(database) as index:
+        columns = {row["name"] for row in index.connection.execute("PRAGMA table_info(scan_runs)")}
+    assert {"status", "error", "extracted", "committed", "rejected", "unaccounted"} <= columns
+
+
+def test_interrupted_wal_recovery_is_bounded_and_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(library_index, "JOURNAL_SIZE_LIMIT_BYTES", 1)
+    messages: list[str] = []
+    with LibraryIndex(tmp_path / "wal.db") as index:
+        index.connection.execute("CREATE TABLE wal_payload (payload BLOB)")
+        index.connection.execute("INSERT INTO wal_payload VALUES (zeroblob(1048576))")
+        index.connection.commit()
+        report = index.recover_wal(messages.append)
+
+    assert report["before"] > 1
+    assert report["truncated"] is True
+    assert report["after"] == 0
+    assert any("Interrupted-write recovery complete" in message for message in messages)
 
 
 def test_an_upgraded_index_can_be_swept_again(library: Path, tmp_path: Path) -> None:

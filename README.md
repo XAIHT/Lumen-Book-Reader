@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.4.0" src="https://img.shields.io/badge/LUMEN-v1.4.0-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.5.1" src="https://img.shields.io/badge/LUMEN-v1.5.1-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -110,12 +110,13 @@ Diacritics are folded, so *Gödel* finds *Godel*.
 
 ### The Turbo Sweep
 
-**⟳ Sweep this folder now** (or <kbd>F5</kbd>) reads every book under the library folder and opens a live monitor while it does. The monitor shows **one tile per extractor process** — its PID, the book it is reading at that instant, and how many it has finished — plus books found, already current, unreadable, folders swept, bytes seen, throughput, and an estimate. You can pause it, resume it, stop it, or open the folder it is sweeping.
+**⟳ Sweep this folder now** (or <kbd>F5</kbd>) reads every book under the library folder and opens a live monitor while it does. The monitor shows **one tile per extractor process** — its PID, whether it is extracting or publishing, the current book, and how many it has finished — plus books found, successfully committed, already current, unreadable, folders swept, bytes seen, throughput, and an estimate. You can pause it, resume it, stop it, or open the folder it is sweeping.
 
 The sweep is a pipeline, not a sequence of phases. Directory walking, index triage, book extraction and index writing all run at the same time, joined by bounded queues, which means two things that matter on a large or remote library:
 
 - **The fleet starts reading before the walk has finished.** On a slow share that is the difference between minutes of idle cores and none.
 - **Memory is set by the queue depths, not by the size of the library.** Nothing in the pipeline holds the file list, so a NAS with millions of books costs the same resident memory as a shelf with a hundred.
+- **Progress means committed work.** A result is counted only after SQLite commits it. Malformed PDF metadata is repaired before FTS5 sees it; one unpersistable book becomes an unreadable row without poisoning its batch; a real writer failure stops and joins the fleet, records the failure, and leaves unfinished books for the next sweep instead of hanging at a false percentage.
 
 Books that have not changed since the last sweep are recognised by size and modification time and are never re-read, so a second sweep of an unchanged library costs one walk. Books that have vanished from disk are forgotten when the sweep completes — a setting you can turn off if your library lives on a drive that is not always mounted.
 
@@ -310,7 +311,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-**322 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, the sweep pipeline and its configuration round-trip, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
+**360 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
 
 ## 📚 Documentation
 

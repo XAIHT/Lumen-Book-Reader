@@ -77,7 +77,7 @@ Asking for one process skips the fleet entirely and extracts in-process: identic
 
 `%APPDATA%\Lumen Reader\library-index.db`, a rebuildable cache kept with Lumen's own state rather than inside your library — which may well be read-only, or synced by something that would not enjoy a multi-gigabyte database appearing in it.
 
-SQLite in WAL mode, `synchronous=NORMAL`, `temp_store=MEMORY`, and a 128 MB page cache. WAL is what lets the writer thread commit while the shelf reads.
+SQLite in WAL mode, `synchronous=NORMAL`, `temp_store=MEMORY`, and a 128 MB page cache. WAL is what lets the writer thread commit while the shelf reads. Autocheckpoint runs every 2,000 pages, retained journals are limited to 256 MiB, and a new sweep visibly checkpoints an oversized WAL left by an interrupted writer before it dispatches books.
 
 | Table | Holds |
 |---|---|
@@ -85,10 +85,18 @@ SQLite in WAL mode, `synchronous=NORMAL`, `temp_store=MEMORY`, and a 128 MB page
 | `books_fts` | FTS5 over title, author, filename, subjects, publisher |
 | `content_fts` | FTS5 over the extracted body text |
 | `fts_rowid` | Where each book sits in each FTS table (see below) |
-| `scan_runs` | One row per completed sweep, so Configuration can state what actually happened last time |
+| `scan_runs` | One row per terminal sweep: generation, status/error, found, extracted, committed, already-current, unreadable, rejected, cancelled, and unaccounted counts |
 | `index_meta` | Small durable facts about the index itself |
 
 Both FTS5 tables tokenize with `unicode61 remove_diacritics 2`, so *Gödel* matches *Godel*.
+
+### The writer boundary — one malformed book cannot stop the fleet
+
+The writer is the only database writer, so its correctness is the pipeline's liveness property. Extractors publish through a cancellation-aware bounded queue and remain in the shared `publishing` state until that queue accepts the record. If the writer suffers an operational SQLite failure, it publishes one fatal error, releases every producer, and the conductor drains and joins every stage. The monitor stays attached in `failing` while cleanup is in progress and changes to terminal `error` only when cleanup and durable scan recording finish.
+
+Each result is normalized to strict UTF-8 twice: once where EPUB/PDF extraction returns document text, and again immediately before SQLite. Lone UTF-16 surrogates exposed by malformed MuPDF metadata are removed without damaging valid non-ASCII text. The exact field names repaired are logged.
+
+Each individual books/FTS/row-map update runs under a savepoint. A data error rolls back only that record and writes a small `ok=false` fallback row where possible; a path that cannot itself be represented is rejected and explicitly counted for retry. Database operational errors are not treated as bad books and are never swallowed. Batch counters move only after the outer transaction commits, so `INDEXED OK`, unreadable, bytes, throughput, and percentage cannot get ahead of durable SQLite state.
 
 ### The `fts_rowid` map — and why it exists
 
@@ -135,14 +143,14 @@ Defaults — which mode a fresh search starts in, the debounce, the page size, a
 
 ## Telemetry, and how the monitor knows
 
-Each extractor process owns a small shared-memory block: six integers (`pid`, state, done, failed, bytes, started-at) plus a 512-byte path buffer. The worker writes it; the monitor reads it.
+Each extractor process owns a small shared-memory block: six integers (`pid`, state, done, failed, bytes, started-at) plus a 512-byte path buffer. State is one of idle, extracting, publishing, or stopped. The worker writes it; the monitor reads it.
 
 It is deliberately **lock-free**. The only consumer is a display, so a torn read costs one frame of a filename rather than a stalled extractor. Nothing about the sweep's correctness depends on this block — it exists so the reader can watch.
 
 ### What the monitor shows
 
 - **One tile per extractor**, in a grid that reflows by window width and scrolls rather than hiding tiles: PID, live state, the book that process is reading *at this instant*, and how many it has finished.
-- **Six headline counters**: books found, read now, already current, unreadable, folders swept, bytes seen.
+- **Six headline counters**: books found, indexed successfully, already current, unreadable, folders swept, bytes seen.
 - **A throughput sparkline** and an estimate of time remaining.
 - **A log** of what the pipeline is doing, including one-off work like the FTS map upgrade.
 - **Pause**, **Resume**, **Stop the sweep**, **Open this folder**, and **Close**.
@@ -332,8 +340,8 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 
 | Test file | Covers |
 |---|---|
-| `tests/test_turbo_scan.py` | Config round-trips, fleet sizing, pipeline behaviour, backend resolution and fallback |
-| `tests/test_library_index.py` | Schema, triage, generations, pruning, search modes, re-sweeping an upgraded index |
+| `tests/test_turbo_scan.py` | Config round-trips, fleet sizing, pipeline behaviour, malformed-record isolation, fatal-writer shutdown, backend resolution and fallback |
+| `tests/test_library_index.py` | Schema/migration, strict-Unicode extraction, WAL recovery, triage, generations, pruning, search modes, re-sweeping an upgraded index |
 | `tests/test_fts_rowid_map.py` | The map is built once, on the first sweep after the upgrade, and is idempotent |
 | `tests/test_scan_monitor.py` | Grid geometry invariants under every fleet size and window size |
 | `tests/test_accel.py` | Shard distribution and stability, shard paths, capacity growth, backend status text |

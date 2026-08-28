@@ -197,10 +197,12 @@ class CoreGrid(QWidget):
 
     def _paint_tile(self, painter, tile, worker, colors, label_font, path_font, count_font) -> None:
         busy = worker.state == "busy"
+        publishing = worker.state == "publishing"
+        active = busy or publishing
         stopped = worker.state == "stopped"
 
-        painter.setBrush(QColor(colors["accent2"] if busy else colors["panel2"]))
-        painter.setPen(QPen(QColor(colors["accent"]) if busy
+        painter.setBrush(QColor(colors["accent2"] if active else colors["panel2"]))
+        painter.setPen(QPen(QColor(colors["accent"]) if active
                             else blend(colors["line"], colors["fg"], 0.30), 1))
         painter.drawRoundedRect(tile, 8, 8)
 
@@ -209,7 +211,7 @@ class CoreGrid(QWidget):
         # a column of accent.
         rail = QRect(tile.left() + 5, tile.top() + 6, 4, tile.height() - 12)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(colors["accent"]) if busy else
+        painter.setBrush(QColor(colors["accent"]) if active else
                          blend(colors["line"], colors["muted"], 0.5 if stopped else 0.2))
         painter.drawRoundedRect(rail, 2, 2)
 
@@ -217,7 +219,7 @@ class CoreGrid(QWidget):
         text_width = tile.width() - 22
 
         painter.setFont(label_font)
-        painter.setPen(QColor(colors["accent"] if busy else colors["muted"]))
+        painter.setPen(QColor(colors["accent"] if active else colors["muted"]))
         heading = f"CORE {worker.index:02d}"
         if worker.pid:
             heading += f"   ·   PID {worker.pid}"
@@ -245,11 +247,13 @@ class CoreGrid(QWidget):
                          f"{worker.done:,}")
 
         painter.setFont(path_font)
-        painter.setPen(QColor(colors["accent"]) if busy else QColor(colors["muted"]))
+        painter.setPen(QColor(colors["accent"]) if active else QColor(colors["muted"]))
         if busy and worker.current:
             label = os.path.basename(worker.current)
             if worker.busy_seconds > 3:
                 label = f"{label}   ({worker.busy_seconds:,.0f}s)"
+        elif publishing:
+            label = "publishing to the index…"
         elif stopped:
             label = f"finished · {worker.failed:,} unreadable" if worker.failed else "finished"
         else:
@@ -389,7 +393,7 @@ class ScanMonitorDialog(ScreenFittingDialog):
         stats.setVerticalSpacing(2)
         self._stat_widgets: dict[str, QLabel] = {}
         for column, (key, caption) in enumerate((
-            ("found", "BOOKS FOUND"), ("indexed", "READ NOW"), ("skipped", "ALREADY CURRENT"),
+            ("found", "BOOKS FOUND"), ("indexed", "INDEXED OK"), ("skipped", "ALREADY CURRENT"),
             ("failed", "UNREADABLE"), ("dirs", "FOLDERS SWEPT"), ("bytes", "BYTES SEEN"),
         )):
             value = QLabel("0")
@@ -530,8 +534,10 @@ class ScanMonitorDialog(ScreenFittingDialog):
             "starting": "ARMING THE FLEET",
             "sweeping": "SWEEPING" + ("  ·  PAUSED" if state.paused else ""),
             "finishing": "FINISHING THE LAST BOOKS",
+            "failing": "STOPPING AFTER A FAILURE",
             "done": "SWEEP COMPLETE",
             "cancelled": "SWEEP STOPPED",
+            "partial": "SWEEP INCOMPLETE",
             "error": "SWEEP FAILED",
         }.get(state.phase, state.phase.upper())
         self.phase_label.setText(f"{headline}   ·   {human_seconds(state.elapsed)}")
@@ -541,7 +547,7 @@ class ScanMonitorDialog(ScreenFittingDialog):
             f"{state.processes} extractor process"
             f"{'' if state.processes == 1 else 'es'} at "
             f"{(state.priority or '?').upper()} priority   ·   "
-            f"{state.active_workers} reading right now   ·   "
+            f"{state.active_workers} extracting or publishing now   ·   "
             f"{state.walkers} walker threads"
         )
         if state.backend:
@@ -564,7 +570,7 @@ class ScanMonitorDialog(ScreenFittingDialog):
         if state.walk_complete and stale > 0:
             self.progress.setRange(0, stale)
             self.progress.setValue(settled)
-            self.progress.setFormat(f"%v of %m books read   ({settled * 100 // max(1, stale)}%)")
+            self.progress.setFormat(f"%v of %m books committed   ({settled * 100 // max(1, stale)}%)")
         elif state.walk_complete:
             self.progress.setRange(0, 1)
             self.progress.setValue(1)

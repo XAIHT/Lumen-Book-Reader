@@ -326,8 +326,8 @@ class ConfigurationDialog(ScreenFittingDialog):
 
         types = page.section(
             "What counts as a book",
-            "Extensions the sweep collects. Lumen can open EPUB and PDF; adding "
-            "anything else here will index it but not open it.",
+            "The sweep only collects formats Lumen can parse and open. Unsupported "
+            "extensions are ignored instead of being mislabeled as EPUB.",
         )
         self.epub_check = QCheckBox("EPUB  (.epub)")
         self.epub_check.setChecked(".epub" in self.scan_config.suffix_set())
@@ -335,11 +335,6 @@ class ConfigurationDialog(ScreenFittingDialog):
         self.pdf_check.setChecked(".pdf" in self.scan_config.suffix_set())
         types.addWidget(self.epub_check)
         types.addWidget(self.pdf_check)
-        extra = sorted(self.scan_config.suffix_set() - {".epub", ".pdf"})
-        self.extra_types = QLineEdit(" ".join(extra))
-        self.extra_types.setPlaceholderText(".mobi  .djvu  .cbz")
-        labelled(types, "Also collect", self.extra_types,
-                 "Space-separated extensions. Leave empty for EPUB and PDF only.")
 
         limits = page.section(
             "What to leave out",
@@ -425,10 +420,6 @@ class ConfigurationDialog(ScreenFittingDialog):
             suffixes.add(".epub")
         if self.pdf_check.isChecked():
             suffixes.add(".pdf")
-        for token in self.extra_types.text().replace(",", " ").split():
-            token = token.strip().casefold()
-            if token:
-                suffixes.add(token if token.startswith(".") else f".{token}")
         return suffixes or {".epub", ".pdf"}
 
     # ── tab: sweep engine ──────────────────────────────────────────────────
@@ -803,11 +794,26 @@ class ConfigurationDialog(ScreenFittingDialog):
         ]
         if last:
             when = time.strftime("%d %b %Y at %H:%M", time.localtime(last["finished_at"]))
+            status = str(last.get("status") or ("cancelled" if last["cancelled"] else "done"))
+            status_note = {
+                "done": "complete",
+                "cancelled": "stopped early",
+                "partial": "incomplete — unfinished books will be retried",
+                "error": "failed",
+            }.get(status, status)
+            committed = int(last.get("committed") or 0)
+            if not committed and not last.get("extracted") and (last["indexed"] or last["failed"]):
+                # Rows written before commit-aware history was added have zero
+                # in the migrated columns; retain their truthful legacy total.
+                committed = int(last["indexed"] or 0) + int(last["failed"] or 0)
             facts.append(
-                f"Last sweep {when}: {last['indexed']:,} read, {last['skipped']:,} already "
-                f"current, {last['failed']:,} unreadable, in {last['seconds']:,.1f}s"
-                + ("  (stopped early)" if last["cancelled"] else "")
+                f"Last sweep {when} ({status_note}): {committed:,} committed, "
+                f"{last['skipped']:,} already current, {last['failed']:,} unreadable, "
+                f"{last['rejected']:,} rejected, {last['unaccounted']:,} unaccounted, "
+                f"in {last['seconds']:,.1f}s"
             )
+            if last.get("error"):
+                facts.append(f"Last sweep error: {last['error']}")
         else:
             facts.append("This library has never been swept.")
         self.index_facts.setText("\n".join(facts))

@@ -39,8 +39,9 @@ Three properties make this safe to point at a network datalake:
   travels up the pipeline instead of the file list travelling down into RAM.
 
 * **No deadlock.**  The writer is the only stage that never blocks on a full
-  queue, so results always drain, which always unblocks the extractors, which
-  always unblocks triage.  The cycle is broken by construction.
+  queue, so results drain during normal operation.  If it fails, it publishes
+  a fatal event and every producer's timed queue operation observes the abort;
+  both the healthy and failed paths therefore break the wait cycle.
 
 * **Generation marking instead of set difference.**  Finding deleted books used
   to need the whole indexed path set *and* the whole found path set in memory at
@@ -78,6 +79,7 @@ from . import machine_profile
 from .library_index import (
     BOOK_SUFFIXES,
     DEFAULT_TEXT_BUDGET,
+    JOURNAL_SIZE_LIMIT_BYTES,
     SKIP_DIRECTORIES,
     LibraryCounts,
     LibraryIndex,
@@ -87,6 +89,7 @@ from .library_index import (
     fts_map_ready,
     normalize_root,
 )
+from .text_safety import clean_unicode_text, escaped_for_log, require_utf8
 
 # ───────────────────────────── process priority ────────────────────────────
 #
@@ -502,8 +505,20 @@ class ScanConfig:
         return max(0, int(self.text_budget)) if self.with_text else 0
 
     def suffix_set(self) -> set[str]:
-        return {e if e.startswith(".") else f".{e}" for e in
-                (x.strip().casefold() for x in self.extensions) if e}
+        requested = {
+            e if e.startswith(".") else f".{e}"
+            for e in (x.strip().casefold() for x in self.extensions)
+            if e
+        }
+        return requested & set(BOOK_SUFFIXES)
+
+    def unsupported_suffixes(self) -> set[str]:
+        requested = {
+            e if e.startswith(".") else f".{e}"
+            for e in (x.strip().casefold() for x in self.extensions)
+            if e
+        }
+        return requested - set(BOOK_SUFFIXES)
 
     # ── persistence ────────────────────────────────────────────────────────
 
@@ -561,7 +576,13 @@ class ScanConfig:
             value = data.get(key, fallback)
             return bool(value) if isinstance(value, (bool, int)) else fallback
 
-        config.extensions = text_tuple("extensions", config.extensions)
+        stored_extensions = text_tuple("extensions", config.extensions)
+        config.extensions = tuple(
+            normalized for extension in stored_extensions
+            if (normalized := (
+                extension if extension.startswith(".") else f".{extension}"
+            ).casefold()) in BOOK_SUFFIXES
+        ) or tuple(sorted(BOOK_SUFFIXES))
         config.skip_directories = text_tuple("skip_directories", config.skip_directories)
         config.exclude_globs = text_tuple("exclude_globs", ())
         config.max_depth = whole("max_depth", 0, 0, 512)
@@ -601,8 +622,13 @@ _V_PID, _V_STATE, _V_DONE, _V_FAILED, _V_BYTES, _V_STARTED_MS = range(6)
 _VITALS_SLOTS = 6
 _PATH_BYTES = 512
 
-_STATE_IDLE, _STATE_BUSY, _STATE_STOPPED = 0, 1, 2
-_STATE_NAMES = {_STATE_IDLE: "idle", _STATE_BUSY: "busy", _STATE_STOPPED: "stopped"}
+_STATE_IDLE, _STATE_BUSY, _STATE_PUBLISHING, _STATE_STOPPED = 0, 1, 2, 3
+_STATE_NAMES = {
+    _STATE_IDLE: "idle",
+    _STATE_BUSY: "busy",
+    _STATE_PUBLISHING: "publishing",
+    _STATE_STOPPED: "stopped",
+}
 
 
 @dataclass(slots=True)
@@ -644,8 +670,10 @@ class ScanSnapshot:
     entries_seen: int = 0
     books_found: int = 0
     books_unchanged: int = 0
+    books_extracted: int = 0
     books_indexed: int = 0
     books_failed: int = 0
+    books_rejected: int = 0
     bytes_found: int = 0
     bytes_indexed: int = 0
 
@@ -671,12 +699,16 @@ class ScanSnapshot:
         return max(0, self.books_found - settled)
 
     @property
+    def books_committed(self) -> int:
+        return self.books_indexed + self.books_failed
+
+    @property
     def active_workers(self) -> int:
-        return sum(1 for worker in self.workers if worker.state == "busy")
+        return sum(1 for worker in self.workers if worker.state in {"busy", "publishing"})
 
     @property
     def running(self) -> bool:
-        return self.phase in {"starting", "sweeping", "finishing"}
+        return self.phase in {"starting", "sweeping", "finishing", "failing"}
 
 
 # ─────────────────────────── the extractor process ─────────────────────────
@@ -692,6 +724,73 @@ def _read_current(buffer: Any) -> str:
     raw = bytes(buffer)
     end = raw.find(b"\x00")
     return raw[:end if end >= 0 else len(raw)].decode("utf-8", "replace")
+
+
+def _publish_result(results: Any, message: Any, abort: Any) -> bool:
+    """Publish with a cancellation-aware wait instead of an immortal ``put``.
+
+    A bounded result queue is the memory safety valve.  It must be allowed to
+    fill, but a dead writer must not turn that safety valve into twenty immortal
+    worker processes.  The writer's fatal path sets *abort*, which releases each
+    publisher within one timeout interval.
+    """
+
+    while not abort.is_set():
+        try:
+            results.put(message, timeout=0.25)
+            return True
+        except queue.Full:
+            continue
+        except (EOFError, OSError, ValueError):
+            return False
+    return False
+
+
+_INDEX_TEXT_FIELDS = (
+    "title", "author", "publisher", "language", "subjects", "description", "body", "error"
+)
+
+
+def _sanitize_index_record(record: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Copy a worker record into the strict UTF-8 contract of SQLite/FTS5."""
+
+    cleaned = dict(record)
+    cleaned["path"] = require_utf8(cleaned.get("path", ""), label="book path")
+    changed = set(str(field) for field in cleaned.get("sanitized_fields", ()))
+    for field in _INDEX_TEXT_FIELDS:
+        original = "" if cleaned.get(field) is None else str(cleaned.get(field))
+        safe = clean_unicode_text(original)
+        if safe != original:
+            changed.add(field)
+        cleaned[field] = safe
+    cleaned["ext"] = clean_unicode_text(cleaned.get("ext", "")).casefold()
+    cleaned["sanitized_fields"] = tuple(sorted(changed))
+    return cleaned, cleaned["sanitized_fields"]
+
+
+def _failed_index_record(record: dict[str, Any], exception: BaseException) -> dict[str, Any]:
+    """A persistable replacement for one record with invalid data."""
+
+    path_text = require_utf8(record.get("path", ""), label="book path")
+    return {
+        "path": path_text,
+        "ext": clean_unicode_text(record.get("ext", "")).casefold(),
+        "size": int(record.get("size") or 0),
+        "mtime_ns": int(record.get("mtime_ns") or 0),
+        "title": clean_unicode_text(Path(path_text).stem),
+        "author": "Unknown author",
+        "publisher": "",
+        "language": "",
+        "subjects": "",
+        "description": "",
+        "pages": 0,
+        "body": "",
+        "ok": False,
+        "error": clean_unicode_text(
+            f"IndexRecordError: {type(exception).__name__}: {exception}"
+        )[:400],
+        "sanitized_fields": (),
+    }
 
 
 def extractor_main(
@@ -713,10 +812,7 @@ def extractor_main(
     taken = apply_process_priority(priority)
     vitals[_V_PID] = os.getpid()
     vitals[_V_STATE] = _STATE_IDLE
-    try:
-        results.put(("hello", worker_index, os.getpid(), taken))
-    except Exception:
-        pass
+    _publish_result(results, ("hello", worker_index, os.getpid(), taken), abort)
 
     while True:
         try:
@@ -752,13 +848,11 @@ def extractor_main(
         vitals[_V_BYTES] += int(size)
         if not record.get("ok", True):
             vitals[_V_FAILED] += 1
+        vitals[_V_STATE] = _STATE_PUBLISHING
+        if not _publish_result(results, ("book", worker_index, record), abort):
+            break
         vitals[_V_STATE] = _STATE_IDLE
         _write_current(path_buffer, "")
-
-        try:
-            results.put(("book", worker_index, record))
-        except Exception:
-            break
 
     vitals[_V_STATE] = _STATE_STOPPED
     _write_current(path_buffer, "")
@@ -796,7 +890,7 @@ class TurboScanner:
         self._processes = self.config.resolved_processes(self.root)
         self._walker_count = self.config.resolved_walkers(self.root)
         self._priority = self.config.resolved_priority(self.root)
-        self._suffixes = self.config.suffix_set() or set(BOOK_SUFFIXES)
+        self._suffixes = self.config.suffix_set()
         self._skip = {name.casefold() for name in self.config.skip_directories}
         self._globs = tuple(pattern.casefold() for pattern in self.config.exclude_globs)
         self._text_budget = self.config.effective_text_budget()
@@ -816,8 +910,10 @@ class TurboScanner:
         self._entries_seen = 0
         self._books_found = 0
         self._books_unchanged = 0
+        self._books_extracted = 0
         self._books_indexed = 0
         self._books_failed = 0
+        self._books_rejected = 0
         self._bytes_found = 0
         self._bytes_indexed = 0
         self._counts: LibraryCounts | None = None
@@ -830,6 +926,7 @@ class TurboScanner:
 
         # ── control ────────────────────────────────────────────────────────
         self._cancel = threading.Event()
+        self._fatal = threading.Event()
         self._pause = threading.Event()
         self._done = threading.Event()
         self._generation = int(time.time())
@@ -848,6 +945,10 @@ class TurboScanner:
         self.backend = self.config.extraction_backend
         self.backend_reason = ""
         self._threads: list[threading.Thread] = []
+        self._walker_threads: list[threading.Thread] = []
+        self._triage_thread: threading.Thread | None = None
+        self._writer_thread: threading.Thread | None = None
+        self._sampler_thread: threading.Thread | None = None
         self._inline = self._processes <= 1
 
         # ── walker bookkeeping ─────────────────────────────────────────────
@@ -882,18 +983,19 @@ class TurboScanner:
         )
         for note in self.config.tuning_notes(self.root):
             self._say(f"Machine: {note}")
+        unsupported = sorted(self.config.unsupported_suffixes())
+        if unsupported:
+            self._say(
+                "Ignored unsupported format setting(s): " + ", ".join(unsupported)
+                + ". Lumen indexes EPUB and PDF only."
+            )
         self._say(f"Engine: {self.backend}  —  {self.backend_reason}")
         control = threading.Thread(target=self._control, name="lumen-sweep", daemon=True)
         control.start()
         self._control_thread = control
 
     def cancel(self) -> None:
-        self._cancel.set()
-        self._pause.clear()
-        if self._abort is not None:
-            self._abort.set()
-        with self._dir_lock:
-            self._dir_wake.notify_all()
+        self._request_abort()
         self._say("Stop requested — draining the fleet.")
 
     def pause(self) -> None:
@@ -911,7 +1013,7 @@ class TurboScanner:
         return self._pause.is_set()
 
     def is_running(self) -> bool:
-        return self._phase in {"starting", "sweeping", "finishing"}
+        return self._phase in {"starting", "sweeping", "finishing", "failing"}
 
     def wait(self, timeout: float | None = None) -> bool:
         return self._done.wait(timeout)
@@ -938,8 +1040,10 @@ class TurboScanner:
                 entries_seen=self._entries_seen,
                 books_found=self._books_found,
                 books_unchanged=self._books_unchanged,
+                books_extracted=self._books_extracted,
                 books_indexed=self._books_indexed,
                 books_failed=self._books_failed,
+                books_rejected=self._books_rejected,
                 bytes_found=self._bytes_found,
                 bytes_indexed=self._bytes_indexed,
                 books_per_second=self._rate,
@@ -963,6 +1067,10 @@ class TurboScanner:
             snapshot.eta_seconds = 0.0
 
         snapshot.workers = self._worker_snapshots(now)
+        snapshot.books_extracted = max(
+            snapshot.books_extracted,
+            sum(worker.done for worker in snapshot.workers),
+        )
         return snapshot
 
     def _worker_snapshots(self, now: float) -> list[WorkerSnapshot]:
@@ -998,6 +1106,67 @@ class TurboScanner:
             except Exception:
                 pass
 
+    def _request_abort(self) -> None:
+        self._cancel.set()
+        self._pause.clear()
+        if self._abort is not None:
+            self._abort.set()
+        with self._dir_lock:
+            self._dir_wake.notify_all()
+
+    def _fail_stage(self, stage: str, exception: BaseException | str) -> None:
+        """Publish one terminal stage error and release every producer."""
+
+        detail = clean_unicode_text(
+            exception if isinstance(exception, str)
+            else f"{type(exception).__name__}: {exception}"
+        )[:400]
+        message = f"{stage}: {detail}" if detail else f"{stage}: unknown failure"
+        first = False
+        with self._lock:
+            if not self._error:
+                self._error = message
+                first = True
+            # Keep the monitor attached while the conductor drains queues and
+            # workers.  ``error`` is terminal; publishing it here used to let
+            # the UI start a second sweep while the failed one was still alive.
+            self._phase = "failing"
+        self._fatal.set()
+        self._request_abort()
+        if first:
+            self._say(f"SWEEP FAILED: {message}")
+
+    def _join_stage(self, stage: Any, label: str, normal_timeout: float) -> bool:
+        """Join a thread/process with a deadline that reacts to late Stop."""
+
+        normal_deadline = time.monotonic() + max(0.5, normal_timeout)
+        abort_deadline: float | None = None
+        while stage.is_alive():
+            stage.join(timeout=0.1)
+            now = time.monotonic()
+            if self._cancel.is_set() or self._fatal.is_set():
+                if abort_deadline is None:
+                    abort_deadline = now + _CANCEL_GRACE
+                if now >= abort_deadline:
+                    return False
+            elif now >= normal_deadline:
+                self._fail_stage(label, TimeoutError(f"did not finish within {normal_timeout:.0f}s"))
+                return False
+        return True
+
+    @staticmethod
+    def _put_with_deadline(target: Any, value: Any, seconds: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.1, seconds)
+        while time.monotonic() < deadline:
+            try:
+                target.put(value, timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+                return True
+            except queue.Full:
+                continue
+            except (EOFError, OSError, ValueError):
+                return False
+        return False
+
     def _connect(self, read_only: bool = False) -> sqlite3.Connection:
         """A connection owned by whichever thread calls this.
 
@@ -1013,6 +1182,7 @@ class TurboScanner:
         connection.execute("PRAGMA cache_size=-131072")
         if not read_only:
             connection.execute("PRAGMA wal_autocheckpoint=2000")
+            connection.execute(f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT_BYTES}")
         return connection
 
     # ── stage 0: the conductor ─────────────────────────────────────────────
@@ -1021,18 +1191,22 @@ class TurboScanner:
         try:
             self._run_pipeline()
         except BaseException as exception:      # the sweep reports, never dies
-            with self._lock:
-                self._error = f"{type(exception).__name__}: {exception}"[:400]
-                self._phase = "error"
-            self._say(f"SWEEP FAILED: {self._error}")
+            self._fail_stage("sweep", exception)
         finally:
+            try:
+                self._finalise()
+            except BaseException as exception:
+                self._fail_stage("finalise", exception)
             with self._lock:
                 self._finished_at = time.monotonic()
+                if self._fatal.is_set() and self._phase == "failing":
+                    self._phase = "error"
             self._done.set()
 
     def _run_pipeline(self) -> None:
         # The schema (and any migration) must exist before a worker touches it.
         with LibraryIndex(self.database, text_budget=self._text_budget) as index:
+            index.recover_wal(self._say)
             self._generation = index.next_generation(self.root_key)
 
         with self._lock:
@@ -1040,38 +1214,66 @@ class TurboScanner:
 
         self._start_extractors()
         sampler = threading.Thread(target=self._sample_rates, name="lumen-rates", daemon=True)
+        self._sampler_thread = sampler
         sampler.start()
 
-        writer = threading.Thread(target=self._writer, name="lumen-writer", daemon=True)
-        triage = threading.Thread(target=self._triage, name="lumen-triage", daemon=True)
+        writer = threading.Thread(
+            target=self._thread_stage, args=("writer", self._writer),
+            name="lumen-writer", daemon=True,
+        )
+        triage = threading.Thread(
+            target=self._thread_stage, args=("triage", self._triage),
+            name="lumen-triage", daemon=True,
+        )
+        self._writer_thread = writer
+        self._triage_thread = triage
         writer.start()
         triage.start()
 
         walkers = self._start_walkers()
+        self._walker_threads = walkers
         for walker in walkers:
-            walker.join()
-        with self._lock:
-            self._walk_complete = True
-            self._walk_finished_after = time.perf_counter() - self._perf_zero
-            self._phase = "finishing"
-        self._say(
-            f"Walk complete: {self._dirs_swept:,} directories, "
-            f"{self._books_found:,} books, {self._entries_seen:,} entries examined."
-        )
+            if not self._join_stage(walker, walker.name, _SHUTDOWN_GRACE):
+                self._fail_stage(walker.name, "did not stop after cancellation")
+                break
+        if not self._fatal.is_set():
+            with self._lock:
+                self._walk_complete = True
+                self._walk_finished_after = time.perf_counter() - self._perf_zero
+                self._phase = "finishing" if not self._cancel.is_set() else self._phase
+            self._say(
+                f"Walk complete: {self._dirs_swept:,} directories, "
+                f"{self._books_found:,} books, {self._entries_seen:,} entries examined."
+            )
 
-        self._walk_queue.put(None)              # triage drains, then dismisses the fleet
-        triage.join()
+        if not self._cancel.is_set():
+            if not self._put_with_deadline(self._walk_queue, None):
+                self._fail_stage("conductor", "could not close the triage input queue")
+        if not self._join_stage(triage, "triage", _SHUTDOWN_GRACE):
+            self._fail_stage("triage", "did not stop after cancellation")
         self._stop_extractors()
-        self._touch_queue.put(None)             # writer drains, then commits and exits
-        writer.join()
+        self._touch_queue.put(None)             # unbounded lightweight queue
+        if not self._join_stage(writer, "writer", _SHUTDOWN_GRACE):
+            self._fail_stage("writer", "did not stop after cancellation")
         sampler.join(timeout=1.0)
 
-        self._finalise()
-
     def _finalise(self) -> None:
-        cancelled = self._cancel.is_set()
+        fatal = self._fatal.is_set()
+        cancelled = self._cancel.is_set() and not fatal
+        with self._lock:
+            self._books_extracted = max(
+                self._books_extracted,
+                sum(int(vitals[_V_DONE]) for vitals in self._vitals),
+            )
+            settled = self._books_indexed + self._books_unchanged + self._books_failed
+            unaccounted = max(0, self._books_found - settled)
+            error = self._error
+        partial = bool(unaccounted) and not fatal and not cancelled
+        status = (
+            "error" if fatal else "cancelled" if cancelled else "partial" if partial else "done"
+        )
         with LibraryIndex(self.database, text_budget=self._text_budget) as index:
-            if self.config.prune_missing and not cancelled:
+            if self.config.prune_missing and status == "done":
                 removed = index.prune_generation(self.root_key, self._generation)
                 if removed:
                     self._say(f"{removed:,} book(s) no longer on disk were removed from the index.")
@@ -1085,38 +1287,52 @@ class TurboScanner:
                 skipped=self._books_unchanged,
                 failed=self._books_failed,
                 cancelled=cancelled,
+                status=status,
+                error=error,
+                extracted=self._books_extracted,
+                committed=self._books_indexed + self._books_failed,
+                rejected=self._books_rejected,
+                unaccounted=unaccounted,
             )
         with self._lock:
             self._counts = counts
-            self._phase = "cancelled" if cancelled else "done"
-            settled = self._books_indexed + self._books_unchanged + self._books_failed
-            unaccounted = max(0, self._books_found - settled)
+            self._phase = status
         self._say(
-            ("Sweep stopped by request. " if cancelled else "Sweep complete. ")
+            ("Sweep failed. " if fatal else "Sweep stopped by request. " if cancelled
+             else "Sweep incomplete. " if partial else "Sweep complete. ")
             + f"{counts.total:,} books in the index  ·  "
-            f"{self._books_indexed:,} newly read  ·  {self._books_unchanged:,} already current  ·  "
-            f"{self._books_failed:,} unreadable  ·  {time.monotonic() - self._started_at:,.1f}s"
+            f"{self._books_indexed:,} committed  ·  {self._books_unchanged:,} already current  ·  "
+            f"{self._books_failed:,} unreadable  ·  {self._books_rejected:,} rejected for retry  ·  "
+            f"{time.monotonic() - self._started_at:,.1f}s"
         )
         # Every book found must be accounted for one way or another.  Saying so
         # out loud is the difference between a sweep that quietly lost work and
         # one the reader can trust; they are re-read on the next sweep, because
         # nothing was written for them.
-        if unaccounted and not cancelled:
+        if unaccounted:
             self._say(
-                f"WARNING: {unaccounted:,} book(s) were found but never finished reading. "
-                f"They are not in the index and the next sweep will pick them up."
+                f"WARNING: {unaccounted:,} book(s) were found but not committed. "
+                f"No missing-book pruning was performed; the next sweep will retry them."
             )
 
     # ── stage 1: the walker fleet ──────────────────────────────────────────
+
+    def _thread_stage(self, label: str, target: Callable[[], None]) -> None:
+        try:
+            target()
+        except BaseException as exception:
+            self._fail_stage(label, exception)
 
     def _start_walkers(self) -> list[threading.Thread]:
         with self._dir_lock:
             self._dir_stack.append((str(self.root), 0))
             self._dir_outstanding = 1
-        walkers = [
-            threading.Thread(target=self._walk, name=f"lumen-walk-{position}", daemon=True)
-            for position in range(self._walker_count)
-        ]
+        walkers = []
+        for position in range(self._walker_count):
+            name = f"lumen-walk-{position}"
+            walkers.append(threading.Thread(
+                target=self._thread_stage, args=(name, self._walk), name=name, daemon=True,
+            ))
         for walker in walkers:
             walker.start()
         return walkers
@@ -1391,16 +1607,39 @@ class TurboScanner:
         books while the sweep reported success.  Only a cancelled sweep is in
         any hurry, and even then a killed worker is reported rather than hidden.
         """
-        for _ in range(self._processes):
+        normal_deadline = time.monotonic() + _SHUTDOWN_GRACE
+        abort_deadline: float | None = None
+        sent = 0
+        while sent < self._processes:
+            now = time.monotonic()
+            if self._cancel.is_set() or self._fatal.is_set():
+                if abort_deadline is None:
+                    abort_deadline = now + _CANCEL_GRACE
+                deadline = abort_deadline
+            else:
+                deadline = normal_deadline
+            if now >= deadline:
+                break
             try:
-                self._jobs.put(None, timeout=5.0)
-            except Exception:
+                self._jobs.put(None, timeout=min(0.25, max(0.01, deadline - now)))
+                sent += 1
+            except queue.Full:
+                continue
+            except (EOFError, OSError, ValueError):
                 break
 
-        cancelled = self._cancel.is_set()
-        deadline = time.monotonic() + (_CANCEL_GRACE if cancelled else _SHUTDOWN_GRACE)
         for worker in self._worker_processes:
-            worker.join(timeout=max(0.5, deadline - time.monotonic()))
+            while worker.is_alive():
+                worker.join(timeout=0.1)
+                now = time.monotonic()
+                if self._cancel.is_set() or self._fatal.is_set():
+                    if abort_deadline is None:
+                        abort_deadline = now + _CANCEL_GRACE
+                    deadline = abort_deadline
+                else:
+                    deadline = normal_deadline
+                if now >= deadline:
+                    break
             if worker.is_alive():
                 self._say(
                     f"{worker.name} did not stop in time and was terminated; the book "
@@ -1408,10 +1647,12 @@ class TurboScanner:
                 )
                 if hasattr(worker, "terminate"):
                     worker.terminate()
-        try:
-            self._results.put(None)
-        except Exception:
-            pass
+                    worker.join(timeout=2.0)
+
+        writer = self._writer_thread
+        if writer is not None and writer.is_alive():
+            if not self._put_with_deadline(self._results, None, _CANCEL_GRACE):
+                self._fail_stage("conductor", "could not close the full result queue")
 
     # ── stage 4: the writer ────────────────────────────────────────────────
 
@@ -1422,9 +1663,7 @@ class TurboScanner:
         always drain here, which is what guarantees the pipeline above can never
         wedge itself.
         """
-        connection = self._connect()
-        cursor = connection.cursor()
-        self._ensure_fts_map(connection)
+        connection: sqlite3.Connection | None = None
         pending: list[dict[str, Any]] = []
         touches: list[int] = []
         results_open = True
@@ -1434,19 +1673,43 @@ class TurboScanner:
 
         def flush() -> None:
             nonlocal last_commit
-            if pending:
-                self._commit_records(cursor, pending)
-                pending.clear()
-            if touches:
-                cursor.executemany(
-                    "UPDATE books SET seen_gen = ? WHERE id = ?",
-                    [(self._generation, book_id) for book_id in touches],
-                )
-                touches.clear()
-            connection.commit()
+            if not pending and not touches:
+                return
+            assert connection is not None
+            cursor = connection.cursor()
+            indexed = failed = rejected = committed_bytes = 0
+            diagnostics: list[str] = []
+            try:
+                if pending:
+                    indexed, failed, rejected, committed_bytes, diagnostics = \
+                        self._commit_records(cursor, pending)
+                if touches:
+                    cursor.executemany(
+                        "UPDATE books SET seen_gen = ? WHERE id = ?",
+                        [(self._generation, book_id) for book_id in touches],
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+            # A book becomes visible in the monitor only after SQLite confirms
+            # the transaction.  The old writer incremented these counters on
+            # dequeue, so a dead transaction could look like successful work.
+            with self._lock:
+                self._books_indexed += indexed
+                self._books_failed += failed
+                self._books_rejected += rejected
+                self._bytes_indexed += committed_bytes
+            pending.clear()
+            touches.clear()
+            for diagnostic in diagnostics:
+                self._say(diagnostic)
             last_commit = time.monotonic()
 
         try:
+            connection = self._connect()
+            self._ensure_fts_map(connection)
             while results_open or touches_open:
                 worked = False
 
@@ -1467,11 +1730,7 @@ class TurboScanner:
                                 record = message[2]
                                 pending.append(record)
                                 with self._lock:
-                                    if record.get("ok", True):
-                                        self._books_indexed += 1
-                                    else:
-                                        self._books_failed += 1
-                                    self._bytes_indexed += int(record.get("size") or 0)
+                                    self._books_extracted += 1
                     except queue.Empty:
                         pass
 
@@ -1494,16 +1753,16 @@ class TurboScanner:
                 if not worked:
                     time.sleep(0.01)
             flush()
-        except Exception as exception:
-            with self._lock:
-                self._error = f"writer: {type(exception).__name__}: {exception}"[:400]
-            self._say(f"Index write failed: {self._error}")
+        except BaseException:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
         finally:
-            try:
-                connection.commit()
-            except sqlite3.Error:
-                pass
-            connection.close()
+            if connection is not None:
+                connection.close()
 
     def _ensure_fts_map(self, connection: sqlite3.Connection) -> None:
         """Give an index written before the rowid map one, before writing to it.
@@ -1531,66 +1790,146 @@ class TurboScanner:
             self._say(f"Could not build the full-text map ({exception}); "
                       f"this sweep will re-index the slow way.")
 
-    def _commit_records(self, cursor: sqlite3.Cursor, records: Sequence[dict[str, Any]]) -> None:
-        generation = self._generation
-        for record in records:
-            path_text = record["path"]
-            name = os.path.basename(path_text)
-            has_text = 1 if record.get("body") else 0
-            size = int(record.get("size") or 0)
-            mtime_ns = int(record.get("mtime_ns") or 0)
+    def _commit_records(
+        self,
+        cursor: sqlite3.Cursor,
+        records: Sequence[dict[str, Any]],
+    ) -> tuple[int, int, int, int, list[str]]:
+        """Write a batch without allowing one malformed book to poison it.
 
-            existing = cursor.execute("SELECT id FROM books WHERE path = ?", (path_text,)).fetchone()
-            values = (
-                self.root_key, name, record.get("ext") or os.path.splitext(name)[1].casefold(),
-                size, mtime_ns, record.get("title", ""), record.get("author", ""),
-                record.get("publisher", ""), record.get("language", ""), record.get("subjects", ""),
-                record.get("description", ""), int(record.get("pages") or 0), has_text,
-                1 if record.get("ok", True) else 0, record.get("error", ""), generation,
-            )
-            if existing is not None:
-                book_id = existing[0]
-                # By rowid, through the map.  This single line is the difference
-                # between a re-sweep that finishes and one that appears to hang:
-                # the old `WHERE book_id = ?` had to scan the entire full-text
-                # index for every book it replaced.
-                drop_fts_rows(cursor, (book_id,))
-                cursor.execute(
-                    """UPDATE books SET root=?, name=?, ext=?, size=?, mtime_ns=?, title=?,
-                       author=?, publisher=?, language=?, subjects=?, description=?, pages=?,
-                       has_text=?, ok=?, error=?, seen_gen=? WHERE id=?""",
-                    (*values, book_id),
+        SQLite rolls a statement back on most errors, but the remainder of the
+        transaction is not a safe recovery boundary for the FTS delete/insert
+        sequence.  A savepoint per book makes that sequence atomic.  Bad record
+        data becomes an indexed failure row; infrastructure errors still escape
+        and fail the complete sweep loudly.
+        """
+
+        indexed = failed = rejected = committed_bytes = 0
+        diagnostics: list[str] = []
+        data_errors = (
+            UnicodeError,
+            ValueError,
+            TypeError,
+            OverflowError,
+            sqlite3.IntegrityError,
+            sqlite3.DataError,
+        )
+
+        for raw_record in records:
+            record: dict[str, Any] | None = None
+            changed: tuple[str, ...] = ()
+            record_error: BaseException | None = None
+            try:
+                record, changed = _sanitize_index_record(raw_record)
+                self._commit_record_savepoint(cursor, record)
+            except data_errors as exception:
+                record_error = exception
+
+            if record_error is not None:
+                try:
+                    fallback = _failed_index_record(raw_record, record_error)
+                    self._commit_record_savepoint(cursor, fallback)
+                except data_errors as fallback_error:
+                    rejected += 1
+                    diagnostics.append(
+                        "Rejected one unpersistable book record; it will be retried next sweep: "
+                        f"{escaped_for_log(raw_record.get('path', '<unknown>'))} — "
+                        f"{escaped_for_log(fallback_error)}"
+                    )
+                    continue
+                failed += 1
+                committed_bytes += int(fallback.get("size") or 0)
+                diagnostics.append(
+                    "Stored one malformed book as unreadable instead of stopping the sweep: "
+                    f"{escaped_for_log(fallback['path'])} — {escaped_for_log(record_error)}"
                 )
+                continue
+
+            assert record is not None
+            if record.get("ok", True):
+                indexed += 1
             else:
-                cursor.execute(
-                    """INSERT INTO books (root, name, ext, size, mtime_ns, title, author,
-                       publisher, language, subjects, description, pages, has_text, ok, error,
-                       seen_gen, path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (*values, path_text),
+                failed += 1
+            committed_bytes += int(record.get("size") or 0)
+            if changed:
+                diagnostics.append(
+                    f"Sanitized invalid document text in {escaped_for_log(record['path'])} "
+                    f"({', '.join(changed)})."
                 )
-                book_id = cursor.lastrowid
+
+        return indexed, failed, rejected, committed_bytes, diagnostics
+
+    def _commit_record_savepoint(self, cursor: sqlite3.Cursor, record: dict[str, Any]) -> None:
+        cursor.execute("SAVEPOINT lumen_book_record")
+        try:
+            self._commit_record(cursor, record)
+        except BaseException:
+            try:
+                cursor.execute("ROLLBACK TO SAVEPOINT lumen_book_record")
+            finally:
+                cursor.execute("RELEASE SAVEPOINT lumen_book_record")
+            raise
+        cursor.execute("RELEASE SAVEPOINT lumen_book_record")
+
+    def _commit_record(self, cursor: sqlite3.Cursor, record: dict[str, Any]) -> None:
+        generation = self._generation
+        path_text = record["path"]
+        name = os.path.basename(path_text)
+        has_text = 1 if record.get("body") else 0
+        size = int(record.get("size") or 0)
+        mtime_ns = int(record.get("mtime_ns") or 0)
+
+        existing = cursor.execute("SELECT id FROM books WHERE path = ?", (path_text,)).fetchone()
+        values = (
+            self.root_key, name, record.get("ext") or os.path.splitext(name)[1].casefold(),
+            size, mtime_ns, record.get("title", ""), record.get("author", ""),
+            record.get("publisher", ""), record.get("language", ""), record.get("subjects", ""),
+            record.get("description", ""), int(record.get("pages") or 0), has_text,
+            1 if record.get("ok", True) else 0, record.get("error", ""), generation,
+        )
+        if existing is not None:
+            book_id = existing[0]
+            # By rowid, through the map.  This single line is the difference
+            # between a re-sweep that finishes and one that appears to hang:
+            # the old `WHERE book_id = ?` had to scan the entire full-text
+            # index for every book it replaced.
+            drop_fts_rows(cursor, (book_id,))
             cursor.execute(
-                "INSERT INTO books_fts (title, author, name, subjects, publisher, book_id)"
-                " VALUES (?,?,?,?,?,?)",
-                (record.get("title", ""), record.get("author", ""), name,
-                 record.get("subjects", ""), record.get("publisher", ""), book_id),
+                """UPDATE books SET root=?, name=?, ext=?, size=?, mtime_ns=?, title=?,
+                   author=?, publisher=?, language=?, subjects=?, description=?, pages=?,
+                   has_text=?, ok=?, error=?, seen_gen=? WHERE id=?""",
+                (*values, book_id),
             )
-            meta_row = cursor.lastrowid
-            content_row = None
-            if has_text:
-                cursor.execute(
-                    "INSERT INTO content_fts (body, book_id) VALUES (?,?)",
-                    (record.get("body", ""), book_id),
-                )
-                content_row = cursor.lastrowid
-            # Remember where both rows landed, so the next sweep that replaces
-            # this book can find them without reading the index end to end.
+        else:
             cursor.execute(
-                "INSERT INTO fts_rowid (book_id, meta_row, content_row) VALUES (?,?,?)"
-                " ON CONFLICT(book_id) DO UPDATE SET meta_row = excluded.meta_row,"
-                " content_row = excluded.content_row",
-                (book_id, meta_row, content_row),
+                """INSERT INTO books (root, name, ext, size, mtime_ns, title, author,
+                   publisher, language, subjects, description, pages, has_text, ok, error,
+                   seen_gen, path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (*values, path_text),
             )
+            book_id = cursor.lastrowid
+        cursor.execute(
+            "INSERT INTO books_fts (title, author, name, subjects, publisher, book_id)"
+            " VALUES (?,?,?,?,?,?)",
+            (record.get("title", ""), record.get("author", ""), name,
+             record.get("subjects", ""), record.get("publisher", ""), book_id),
+        )
+        meta_row = cursor.lastrowid
+        content_row = None
+        if has_text:
+            cursor.execute(
+                "INSERT INTO content_fts (body, book_id) VALUES (?,?)",
+                (record.get("body", ""), book_id),
+            )
+            content_row = cursor.lastrowid
+        # Remember where both rows landed, so the next sweep that replaces this
+        # book can find them without reading the index end to end.
+        cursor.execute(
+            "INSERT INTO fts_rowid (book_id, meta_row, content_row) VALUES (?,?,?)"
+            " ON CONFLICT(book_id) DO UPDATE SET meta_row = excluded.meta_row,"
+            " content_row = excluded.content_row",
+            (book_id, meta_row, content_row),
+        )
 
     # ── the rate sampler ───────────────────────────────────────────────────
 

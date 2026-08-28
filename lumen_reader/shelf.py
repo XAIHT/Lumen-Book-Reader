@@ -785,16 +785,25 @@ class LibraryShelf(QWidget):
         """
         self.progress.show()
         self.rescan_button.setEnabled(False)
-        if state.phase == "error":
+        if state.phase in {"failing", "error"}:
             self.progress.setRange(0, 1)
             self.progress.setValue(1)
-            self.progress.setFormat(f"Sweep failed — {state.error}")
+            verb = "Stopping after failure" if state.phase == "failing" else "Sweep failed"
+            self.progress.setFormat(f"{verb} — {state.error}")
+            return
+        if state.phase == "partial":
+            self.progress.setRange(0, 1)
+            self.progress.setValue(1)
+            self.progress.setFormat(
+                f"Sweep incomplete — {state.books_pending:,} book(s) not committed; "
+                "the next sweep will retry"
+            )
             return
         if not state.walk_complete:
             self.progress.setRange(0, 0)
             self.progress.setFormat(
                 f"Sweeping {state.dirs_swept:,} folders — {state.books_found:,} books found, "
-                f"{state.books_indexed:,} read on {state.active_workers} of "
+                f"{state.books_committed:,} committed on {state.active_workers} of "
                 f"{state.processes} cores"
             )
             return
@@ -803,14 +812,14 @@ class LibraryShelf(QWidget):
         if state.running and stale > 0:
             self.progress.setRange(0, stale)
             self.progress.setValue(settled)
-            self.progress.setFormat("Reading %v of %m books  ·  " + f"{state.books_per_second:,.0f}/s")
+            self.progress.setFormat("Committing %v of %m books  ·  " + f"{state.books_per_second:,.0f}/s")
             return
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         total = state.counts.total if state.counts is not None else state.books_found
         self.progress.setFormat(
             f"Sweep {'stopped' if state.phase == 'cancelled' else 'complete'} — "
-            f"{total:,} books indexed  ·  {state.books_indexed:,} newly read"
+            f"{total:,} books indexed  ·  {state.books_committed:,} newly committed"
         )
 
     def finish_sweep(self) -> None:

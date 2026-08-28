@@ -15,6 +15,53 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+No changes yet.
+
+---
+
+## [1.5.1] — 2026-08-28
+
+Patch release: writer-deadlock repair, strict document Unicode, truthful sweep
+accounting, interrupted-WAL recovery, and installed-library diagnostics.
+
+### Fixed
+
+- **A malformed PDF can no longer kill the sole SQLite writer and deadlock the
+  extractor fleet.** MuPDF can expose lone UTF-16 surrogate code points from
+  damaged metadata (the observed title was `001.jpg\udcc0\udc80`). Every text
+  field is now repaired at extraction and revalidated at the persistence
+  boundary before it reaches SQLite or FTS5.
+- **Writer failures are terminal, visible, and bounded.** Result publication is
+  cancellation-aware, workers remain in a visible `publishing` state until the
+  queue accepts their record, and any database/infrastructure error aborts and
+  joins walkers, triage, extractors, writer, and rate sampler instead of leaving
+  producers blocked on a full result queue.
+- **One bad book is isolated from the rest of its transaction.** Each record's
+  books/FTS/row-map update runs under a SQLite savepoint. Data errors roll back
+  that book and persist an `ok=false` diagnostic row where possible; genuine
+  SQLite operational errors fail the sweep rather than being swallowed.
+- **Progress now means committed work.** Indexed, unreadable, byte, rate, and
+  progress counters advance only after `COMMIT`; the monitor distinguishes
+  extraction from result publication and stays attached during failure cleanup.
+- **Interrupted sweeps leave durable evidence.** `scan_runs` now records status,
+  error, extracted, committed, and unaccounted counts, with an in-place schema
+  migration for existing indexes. Oversized retained WAL files are checkpointed
+  and, when uncontended, truncated before a new sweep.
+- **Unsupported extension settings no longer masquerade as EPUB.** Stored or
+  programmatic suffixes are restricted to the formats Lumen actually parses,
+  EPUB and PDF, and the Configuration window no longer offers MOBI/DJVU/CBZ as
+  index-only formats.
+- Added ten regression tests covering the exact malformed-PDF signature,
+  strict UTF-8 extraction, per-record fallback, fatal-writer shutdown, durable
+  scan failure records, legacy schema migration, WAL recovery, extension
+  filtering, partial-sweep prune prevention, and incomplete-state presentation.
+
+---
+
+## [1.5.0] — 2026-08-23
+
+Tag `v1.5.0` → `5db5de4`. Machine-aware performance and resilient uninstall.
+
 ### Changed
 
 - **Uninstalling is now total.** The uninstaller used to keep

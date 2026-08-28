@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if sys.platform != "win32" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QModelIndex, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
@@ -25,6 +27,7 @@ from lumen_reader.shelf import (  # noqa: E402
     row_border_color,
     scaled_font,
 )
+from lumen_reader.turbo_scan import ScanSnapshot  # noqa: E402
 
 from test_library_index import make_epub, make_pdf  # noqa: E402
 
@@ -64,6 +67,20 @@ def test_counts_banner_shows_totals_and_each_type(shelf: LibraryShelf) -> None:
 
 def test_status_line_reports_shown_and_total(shelf: LibraryShelf) -> None:
     assert "3" in shelf.status.text()
+
+
+def test_a_partial_sweep_is_never_presented_as_complete(shelf: LibraryShelf) -> None:
+    state = ScanSnapshot(
+        phase="partial",
+        root=shelf.root,
+        walk_complete=True,
+        books_found=3,
+        books_indexed=2,
+        books_rejected=1,
+    )
+    shelf.show_sweep(state)
+    assert "incomplete" in shelf.progress.text().casefold()
+    assert "1 book(s) not committed" in shelf.progress.text()
 
 
 @pytest.mark.parametrize(

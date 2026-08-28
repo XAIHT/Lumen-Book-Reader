@@ -9,6 +9,7 @@ with a real process fleet, because that is what a reader actually gets.
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -221,6 +222,117 @@ def test_a_corrupt_book_is_recorded_not_fatal(library: Path, tmp_path: Path) -> 
     assert final.phase == "done"
 
 
+def test_malformed_pdf_unicode_is_sanitized_without_killing_the_writer(
+    library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the exact lone-surrogate metadata that hung C:\\Books."""
+
+    real_extract = turbo_scan.extract_book
+
+    def extract_with_one_bad_title(job):
+        record = real_extract(job)
+        if Path(job[0]).name == "gamma.pdf":
+            record["title"] = "001.jpg\udcc0\udc80"
+            record["sanitized_fields"] = ()
+        return record
+
+    monkeypatch.setattr(turbo_scan, "extract_book", extract_with_one_bad_title)
+    final = sweep(tmp_path / "i.db", library, fleet_config(processes=1))
+
+    assert final.phase == "done"
+    assert final.books_extracted == 4
+    assert final.books_indexed == 4
+    assert final.books_failed == 0
+    assert any("Sanitized invalid document text" in line for line in final.messages)
+    with LibraryIndex(tmp_path / "i.db") as index:
+        matches = index.search(library, "001")
+    assert [row.title for row in matches] == ["001.jpg"]
+
+
+def test_one_unpersistable_record_becomes_unreadable_and_the_sweep_continues(
+    library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_extract = turbo_scan.extract_book
+
+    def extract_with_bad_pages(job):
+        record = real_extract(job)
+        if Path(job[0]).name == "gamma.pdf":
+            record["pages"] = object()
+        return record
+
+    monkeypatch.setattr(turbo_scan, "extract_book", extract_with_bad_pages)
+    final = sweep(tmp_path / "i.db", library, fleet_config(processes=1))
+
+    assert final.phase == "done"
+    assert final.books_indexed == 3
+    assert final.books_failed == 1
+    assert final.books_rejected == 0
+    assert final.books_committed == 4
+    assert any("Stored one malformed book as unreadable" in line for line in final.messages)
+
+
+def test_a_fatal_writer_error_aborts_the_fleet_and_is_recorded(
+    library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "i.db"
+
+    def disk_failure(self, cursor, record):
+        raise sqlite3.OperationalError("simulated disk I/O failure")
+
+    monkeypatch.setattr(TurboScanner, "_commit_record", disk_failure)
+    scanner = TurboScanner(database, library, fleet_config())
+    scanner.start()
+
+    assert scanner.wait(20), "a dead writer must release every blocked producer"
+    final = scanner.snapshot()
+    assert final.phase == "error"
+    assert "writer" in final.error
+    assert "simulated disk I/O failure" in final.error
+    assert final.books_indexed == 0, "dequeued work is not committed work"
+    assert final.books_failed == 0
+    assert final.books_extracted == sum(worker.done for worker in final.workers)
+    with LibraryIndex(database) as index:
+        run = index.last_scan(library)
+    assert run is not None
+    assert run["status"] == "error"
+    assert "simulated disk I/O failure" in run["error"]
+    assert run["committed"] == 0
+    assert run["rejected"] == 0
+    assert run["unaccounted"] > 0
+
+
+def test_a_rejected_record_makes_the_sweep_partial_and_prevents_pruning(
+    library: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "i.db"
+    first = sweep(database, library, fleet_config(processes=1))
+    assert first.phase == "done"
+    (library / "gamma.pdf").unlink()
+    make_pdf(library / "gamma.pdf", "Gamma Changed", "new searchable body")
+    real_extract = turbo_scan.extract_book
+
+    def extract_with_invalid_path(job):
+        record = real_extract(job)
+        if Path(job[0]).name == "gamma.pdf":
+            record["path"] = "invalid\ud800.pdf"
+        return record
+
+    monkeypatch.setattr(turbo_scan, "extract_book", extract_with_invalid_path)
+    final = sweep(database, library, fleet_config(processes=1))
+
+    assert final.phase == "partial"
+    assert final.books_rejected == 1
+    assert final.counts is not None and final.counts.total == 4
+    assert any("No missing-book pruning" in line for line in final.messages)
+    with LibraryIndex(database) as index:
+        run = index.last_scan(library)
+        assert [row.title for row in index.search(library, "Gamma Report")] == ["Gamma Report"]
+    assert run is not None
+    assert run["status"] == "partial"
+    assert run["rejected"] == 1
+    assert run["unaccounted"] == 1
+
+
 def test_every_book_found_is_accounted_for(library: Path, tmp_path: Path) -> None:
     """No book may be found and then quietly dropped.
 
@@ -305,6 +417,12 @@ def test_config_round_trips_through_stored_state() -> None:
     )
     restored = ScanConfig.from_mapping(original.to_dict())
     assert restored == original
+
+
+def test_unsupported_persisted_extensions_are_not_sent_to_extractors() -> None:
+    restored = ScanConfig.from_mapping({"extensions": [".pdf", ".mobi", ".azw3"]})
+    assert restored.extensions == (".pdf",)
+    assert ScanConfig(extensions=(".mobi",)).suffix_set() == set()
 
 
 def test_a_corrupt_settings_file_falls_back_to_defaults() -> None:
