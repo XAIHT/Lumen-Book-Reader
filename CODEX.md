@@ -10,6 +10,28 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.2 Responsive reader-header repair — 2026-08-29
+
+The v1.5.2 patch repairs the scaled Sepia reader shown with the `A−` text-size
+button covering the right edge of in-book search. The failure was layout
+pressure, not painting corruption: a book-controlled chapter title advertised
+its entire text width while every lower-priority header action retained its
+minimum width. At the logical width produced by Windows display scaling, Qt had
+no valid allocation and adjacent controls intersected.
+
+| File | Major/minor implementation detail | Result and fallback |
+|---|---|---|
+| `lumen_reader/ui.py` | Makes the chapter heading horizontally ignorable while reserving a useful 160-pixel reading preview; measures the real minimum width of explicit header children; progressively collapses Open Book, Mark, Notes, Definer, and Configuration only while necessary. | Search, `A−`, `A+`, theme, and Speed remain disjoint. Optional actions reappear automatically as the window grows; the decorative LUMEN brand is the final narrow-window release valve. |
+| `tests/test_reader_header_layout.py` | New live `ReaderWindow` geometry regressions in Sepia at 940, 1100, 1420, and 1640 logical pixels, plus restoration coverage. | Every pair of visible header widgets must have a positive gap, the final widget must remain inside the header, and search must end before `A−` begins. |
+| `pyproject.toml` / `README.md` / `CHANGELOG.md` | Advances the forward patch identity to 1.5.2 without moving or rewriting v1.5.1. | Release history remains immutable and the source, badge, changelog, and next artifact agree. |
+
+The five exact layout cases passed twice (including the final Sepia form) with
+five Shoter photographs per run. The nine-test affected set—layout, reader
+search order, link policy, and the real Chromium RSVP target—passed 9/9 with
+one new full-desktop Shoter photograph per case. The complete collection then
+passed 365/365 with zero failures, errors, or skips in 391.322 seconds and 365
+new full-desktop Shoter photographs.
+
 ## 0.1 Post-audit sweep-hang remediation — 2026-08-28
 
 This living update records the v1.5.1 repair made after an installed sweep stopped at 800/2,881 changed books. The observed writer exception was `UnicodeEncodeError: surrogates not allowed`; the exact malformed PDF title was `001.jpg\udcc0\udc80`. Once the only writer thread exited, the bounded result queue filled, all 20 extractor processes blocked publishing, and their old telemetry incorrectly said `waiting for a book`. These are the implemented changes, not future proposals:

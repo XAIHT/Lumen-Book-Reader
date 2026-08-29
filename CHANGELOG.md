@@ -19,6 +19,25 @@ No changes yet.
 
 ---
 
+## [1.5.2] — 2026-08-29
+
+Patch release: responsive reader-header repair for Windows display scaling and
+long chapter names.
+
+### Fixed
+
+- **The `A−` text-size control can no longer overlap the in-book search
+  cluster.** Long document headings are now the elastic header item, and
+  lower-priority actions collapse progressively when the available logical
+  width is constrained by window size or Windows scaling.
+- Search, `A−`, `A+`, theme, and Speed controls retain separate geometry at the
+  940-pixel minimum window and at 1100, 1420, and 1640 logical pixels. Hidden
+  optional actions return automatically when space becomes available.
+- Added five live Qt regression cases in the Sepia theme, each validated with a
+  full-desktop Tlamatini Shoter capture.
+
+---
+
 ## [1.5.1] — 2026-08-28
 
 Patch release: writer-deadlock repair, strict document Unicode, truthful sweep

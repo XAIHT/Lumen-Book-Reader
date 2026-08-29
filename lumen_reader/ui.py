@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QScroller,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -1666,6 +1667,7 @@ class ReaderWindow(QMainWindow):
         self.sidebar.setVisible(bool(self.store.data.get("sidebar_visible", True)))
         self._connect_shortcuts()
         self._apply_app_theme()
+        self._update_header_responsiveness()
         self._populate_welcome(initial_books or [])
         QApplication.instance().installEventFilter(self)
 
@@ -1686,22 +1688,22 @@ class ReaderWindow(QMainWindow):
         outer.setSpacing(0)
         self.setCentralWidget(shell)
 
-        header = QFrame()
-        header.setObjectName("header")
-        header.setFixedHeight(66)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(18, 10, 18, 10)
-        header_layout.setSpacing(10)
+        self.header = QFrame()
+        self.header.setObjectName("header")
+        self.header.setFixedHeight(66)
+        self.header_layout = QHBoxLayout(self.header)
+        self.header_layout.setContentsMargins(18, 10, 18, 10)
+        self.header_layout.setSpacing(10)
 
         self.sidebar_button = QPushButton("☰")
         self.sidebar_button.setObjectName("iconButton")
         self.sidebar_button.setToolTip("Show or hide the book panel")
         self.sidebar_button.clicked.connect(self._toggle_sidebar)
-        header_layout.addWidget(self.sidebar_button)
+        self.header_layout.addWidget(self.sidebar_button)
 
-        brand = QLabel("LUMEN")
-        brand.setObjectName("brand")
-        header_layout.addWidget(brand)
+        self.brand = QLabel("LUMEN")
+        self.brand.setObjectName("brand")
+        self.header_layout.addWidget(self.brand)
 
         self.library_button = QPushButton("←  MY LIBRARY")
         self.library_button.setObjectName("libraryButton")
@@ -1710,16 +1712,25 @@ class ReaderWindow(QMainWindow):
         self.library_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.library_button.clicked.connect(self.return_to_library)
         self.library_button.hide()
-        header_layout.addWidget(self.library_button)
+        self.header_layout.addWidget(self.library_button)
 
         self.header_divider = QFrame()
         self.header_divider.setFrameShape(QFrame.Shape.VLine)
         self.header_divider.setObjectName("headerDivider")
-        header_layout.addWidget(self.header_divider)
+        self.header_layout.addWidget(self.header_divider)
 
         self.chapter_heading = QLabel("Your reading room")
         self.chapter_heading.setObjectName("chapterHeading")
-        header_layout.addWidget(self.chapter_heading, 1)
+        # Chapter names come from the book and can be arbitrarily long.  A
+        # QLabel normally advertises the full text width as its minimum.  That
+        # made Qt preserve the title by placing the controls to its right on
+        # top of each other when Windows display scaling reduced the available
+        # logical width.  The title is the one elastic item in the header.
+        self.chapter_heading.setMinimumWidth(0)
+        self.chapter_heading.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.header_layout.addWidget(self.chapter_heading, 1)
 
         self.reader_search_cluster = QFrame()
         self.reader_search_cluster.setObjectName("readerSearchCluster")
@@ -1754,25 +1765,25 @@ class ReaderWindow(QMainWindow):
         search_cluster_layout.addWidget(self.reader_search_options)
         self._build_reader_search_menu()
         self.reader_search_cluster.hide()
-        header_layout.addWidget(self.reader_search_cluster)
+        self.header_layout.addWidget(self.reader_search_cluster)
 
         self.smaller_button = QPushButton("A−")
         self.smaller_button.setObjectName("compactButton")
         self.smaller_button.setToolTip("Decrease text size")
         self.smaller_button.clicked.connect(lambda: self._change_font_size(-1))
-        header_layout.addWidget(self.smaller_button)
+        self.header_layout.addWidget(self.smaller_button)
         self.larger_button = QPushButton("A+")
         self.larger_button.setObjectName("compactButton")
         self.larger_button.setToolTip("Increase text size")
         self.larger_button.clicked.connect(lambda: self._change_font_size(1))
-        header_layout.addWidget(self.larger_button)
+        self.header_layout.addWidget(self.larger_button)
 
         self.theme_combo = WheelSafeComboBox()
         self.theme_combo.addItems(THEME_NAMES)
         current_theme = str(self.store.data.get("theme", "dark"))
         self.theme_combo.setCurrentText(THEME_LABELS.get(current_theme, "Night"))
         self.theme_combo.currentTextChanged.connect(self._theme_changed)
-        header_layout.addWidget(self.theme_combo)
+        self.header_layout.addWidget(self.theme_combo)
 
         self.speed_reader_button = QPushButton("⚡  Speed")
         self.speed_reader_button.setObjectName("speedReaderButton")
@@ -1782,7 +1793,7 @@ class ReaderWindow(QMainWindow):
         self.speed_reader_button.setAccessibleName("Configure and start speed reading")
         self.speed_reader_button.clicked.connect(self.show_speed_reader)
         self.speed_reader_button.hide()
-        header_layout.addWidget(self.speed_reader_button)
+        self.header_layout.addWidget(self.speed_reader_button)
 
         self.configure_button = QPushButton("⚙  Configuration")
         self.configure_button.setObjectName("toolButton")
@@ -1792,7 +1803,7 @@ class ReaderWindow(QMainWindow):
         )
         self.configure_button.setAccessibleName("Open Lumen configuration")
         self.configure_button.clicked.connect(self.show_configuration)
-        header_layout.addWidget(self.configure_button)
+        self.header_layout.addWidget(self.configure_button)
 
         self.definer_button = QPushButton("◇  Definer")
         self.definer_button.setObjectName("toolButton")
@@ -1800,26 +1811,36 @@ class ReaderWindow(QMainWindow):
             "Configure contextual analysis, Tlamatini Googler, and Ollama definition fallbacks"
         )
         self.definer_button.clicked.connect(self.show_definition_settings)
-        header_layout.addWidget(self.definer_button)
+        self.header_layout.addWidget(self.definer_button)
 
         self.all_marks_button = QPushButton("Notes & Marks")
         self.all_marks_button.setObjectName("toolButton")
         self.all_marks_button.setToolTip("Search notes and marks from every book (Ctrl+Shift+M)")
         self.all_marks_button.clicked.connect(self.show_all_marks)
-        header_layout.addWidget(self.all_marks_button)
+        self.header_layout.addWidget(self.all_marks_button)
 
         self.mark_button = QPushButton("✦  Mark position")
         self.mark_button.setObjectName("toolButton")
         self.mark_button.setToolTip("Mark this position and optionally add a note (Ctrl+B)")
         self.mark_button.setEnabled(False)
         self.mark_button.clicked.connect(self.request_mark_position)
-        header_layout.addWidget(self.mark_button)
+        self.header_layout.addWidget(self.mark_button)
 
-        open_button = QPushButton("Open Book")
-        open_button.setObjectName("primarySmallButton")
-        open_button.clicked.connect(self.browse_for_book)
-        header_layout.addWidget(open_button)
-        outer.addWidget(header)
+        self.open_book_button = QPushButton("Open Book")
+        self.open_book_button.setObjectName("primarySmallButton")
+        self.open_book_button.clicked.connect(self.browse_for_book)
+        self.header_layout.addWidget(self.open_book_button)
+        # Collapse only lower-priority actions when space runs out, and restore
+        # them automatically when the window grows again.  This is preferable
+        # to letting Qt overlap adjacent controls.
+        self._optional_header_widgets = (
+            self.open_book_button,
+            self.mark_button,
+            self.all_marks_button,
+            self.definer_button,
+            self.configure_button,
+        )
+        outer.addWidget(self.header)
 
         self.main_stack = QStackedWidget()
         self.welcome = LibraryShelf(self.library_index, self.library_root)
@@ -2279,6 +2300,7 @@ class ReaderWindow(QMainWindow):
         self.reader_search_cluster.show()
         self.speed_reader_button.show()
         self.mark_button.setEnabled(True)
+        self._update_header_responsiveness()
         self.setWindowTitle(f"{self.book.metadata.title} — Lumen")
 
     def return_to_library(self) -> None:
@@ -2306,6 +2328,7 @@ class ReaderWindow(QMainWindow):
         self.speed_reader_button.hide()
         self.mark_button.setEnabled(False)
         self.chapter_heading.setText("Your reading room")
+        self._update_header_responsiveness()
         self.setWindowTitle("Lumen — Book Reader")
         self._populate_welcome(library_books(Path.cwd()))
 
@@ -3583,6 +3606,55 @@ class ReaderWindow(QMainWindow):
         self._remember_progress()
         self.store.save()
 
+    def _header_minimum_width(self) -> int:
+        """Return the real minimum width of the explicitly visible header items."""
+
+        margins = self.header_layout.contentsMargins()
+        required = margins.left() + margins.right()
+        visible_items = 0
+        for index in range(self.header_layout.count()):
+            widget = self.header_layout.itemAt(index).widget()
+            if widget is None or widget.isHidden():
+                continue
+            visible_items += 1
+            if widget is self.chapter_heading:
+                # The stretch label is deliberately allowed to collapse; Qt
+                # clips its long text rather than sacrificing toolbar geometry.
+                # Still reserve a useful title preview while deciding which
+                # lower-priority actions to collapse.
+                required += 160 if not self.reader_search_cluster.isHidden() else 120
+                continue
+            hint = widget.minimumSizeHint().width()
+            required += max(0, widget.minimumWidth(), hint)
+        if visible_items > 1:
+            required += self.header_layout.spacing() * (visible_items - 1)
+        return required
+
+    def _update_header_responsiveness(self) -> None:
+        """Fit the header without ever allowing one control to cover another."""
+
+        if not hasattr(self, "_optional_header_widgets"):
+            return
+        self.brand.show()
+        for widget in self._optional_header_widgets:
+            widget.show()
+
+        available = max(0, self.width())
+        self.header_layout.invalidate()
+        for widget in self._optional_header_widgets:
+            if self._header_minimum_width() <= available:
+                break
+            widget.hide()
+            self.header_layout.invalidate()
+
+        # The brand is decorative, while every remaining item is a direct
+        # reading control.  On the smallest supported window it is the final
+        # safe release valve after all optional actions have collapsed.
+        if self._header_minimum_width() > available:
+            self.brand.hide()
+            self.header_layout.invalidate()
+        self.header_layout.activate()
+
     @staticmethod
     def _is_inside(widget: QWidget, container: QWidget) -> bool:
         current: QWidget | None = widget
@@ -3606,6 +3678,7 @@ class ReaderWindow(QMainWindow):
             edit_width = 90
         self.reader_search_edit.setFixedWidth(edit_width)
         self.reader_search_cluster.setFixedWidth(edit_width + 65)
+        self._update_header_responsiveness()
 
     def eventFilter(self, watched: Any, event: Any) -> bool:
         """Route precision-trackpad scrolls received by non-scrollable chrome.
