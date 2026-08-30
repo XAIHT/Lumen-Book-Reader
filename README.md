@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.5.2" src="https://img.shields.io/badge/LUMEN-v1.5.2-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.5.3" src="https://img.shields.io/badge/LUMEN-v1.5.3-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -87,6 +87,8 @@ That last stage is why Ollama exists in Lumen: **not to chat, summarize the book
 ## ⟳ Your library, indexed and searchable
 
 Lumen keeps a rebuildable index of every book in your library folder, so the shelf can answer questions about thousands of files instantly — including questions about what is *inside* them.
+
+Every shelf card permanently identifies its original file with a visible full path, including books stored directly in the library root. Open a book and that same source identity remains in the reader header beneath the chapter title, with middle elision that preserves the filename and a one-click copy-path control. The complete path is never confined to a hover tooltip.
 
 ### Searching the shelf
 
@@ -311,7 +313,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-**365 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
+**369 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, persistent original-file identity on shelf cards and in the reader header, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
 
 ## 📚 Documentation
 

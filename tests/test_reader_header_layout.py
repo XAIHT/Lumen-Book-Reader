@@ -19,6 +19,8 @@ from lumen_reader.marks import MarksStore
 from lumen_reader.storage import ReaderStore
 from lumen_reader.ui import ReaderWindow
 
+SOURCE_PATH = r"C:\Books\Research\Explosives\pasteexplosivepaper.pdf"
+
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
@@ -44,6 +46,7 @@ def reader_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     window.chapter_heading.setText(
         "1.1 Contents of Modern Radio Frequency Technologies and Their Applications"
     )
+    window._set_source_path(SOURCE_PATH)
     window.show()
     app.processEvents()
     yield window
@@ -97,3 +100,28 @@ def test_reader_header_restores_optional_actions_when_space_returns(
     reader_window._update_header_responsiveness()
     QApplication.processEvents()
     assert all(not widget.isHidden() for widget in reader_window._optional_header_widgets)
+
+
+def test_reader_header_visibly_identifies_the_original_file(
+    reader_window: ReaderWindow,
+) -> None:
+    reader_window.resize(1100, 700)
+    reader_window._update_header_responsiveness()
+    QApplication.processEvents()
+
+    assert reader_window.source_path_label.isVisible()
+    assert reader_window.copy_source_path_button.isVisible()
+    assert reader_window.source_path_label.source_path == SOURCE_PATH
+    assert reader_window.source_path_label.text().startswith("FILE")
+    assert reader_window.source_path_label.text().endswith("pasteexplosivepaper.pdf")
+    assert SOURCE_PATH in reader_window.source_path_label.accessibleName()
+
+
+def test_reader_header_clears_the_file_identity_on_the_library_surface(
+    reader_window: ReaderWindow,
+) -> None:
+    reader_window._set_source_path(None)
+
+    assert reader_window.source_path_label.source_path == ""
+    assert reader_window.source_path_label.isHidden()
+    assert reader_window.copy_source_path_button.isHidden()

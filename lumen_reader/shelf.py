@@ -119,15 +119,40 @@ def row_border_color(colors: dict[str, str]) -> QColor:
 
 
 def folder_color(colors: dict[str, str]) -> QColor:
-    """The shade of the "in <sub-folder>" line under a book.
+    """The shade of the persistent original-file line under a book.
 
-    It used to be painted in the same muted grey as the author and file facts
-    directly above it, one point smaller and pinned to the bottom edge of the
-    row - on a real shelf it was effectively invisible.  It carries the one
-    thing that tells two identically-named books apart, so it is lifted most of
-    the way to the foreground while staying quieter than the title.
+    The source location distinguishes identically named books and must remain
+    readable in every palette, while staying quieter than the title.
     """
     return blend(colors["muted"], colors["fg"], 0.55)
+
+
+def source_path_text(path: str | Path, metrics: QFontMetrics, width: int) -> str:
+    """Format an original book path while preserving both its root and filename."""
+
+    normalized = os.path.normpath(str(path))
+    available = max(0, int(width))
+    prefix = "FILE  ·  "
+    full = prefix + normalized
+    if metrics.horizontalAdvance(full) <= available:
+        return full
+
+    parent, filename = os.path.split(normalized)
+    separator = os.sep if parent else ""
+    fixed = prefix + separator + filename
+    parent_width = available - metrics.horizontalAdvance(fixed)
+    if parent and parent_width >= metrics.horizontalAdvance("…"):
+        return (
+            prefix
+            + metrics.elidedText(parent, Qt.TextElideMode.ElideMiddle, parent_width)
+            + separator
+            + filename
+        )
+    return metrics.elidedText(
+        prefix + filename,
+        Qt.TextElideMode.ElideMiddle,
+        available,
+    )
 
 
 def human_bytes(value: int) -> str:
@@ -276,7 +301,7 @@ class LibraryModel(QAbstractListModel):
 
 
 class BookDelegate(QStyledItemDelegate):
-    """Paints one book row: kind badge, title, author, and any topic snippet."""
+    """Paint one book row with its identity, original path, and optional snippet."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -365,29 +390,21 @@ class BookDelegate(QStyledItemDelegate):
             detail_metrics.elidedText("  ·  ".join(facts), Qt.TextElideMode.ElideRight, text_width),
         )
 
-        # Sub-folder line.  Only drawn when the book is *not* sitting directly
-        # in the library root - in a flat library it would be the same string on
-        # every row, which is noise rather than information.
-        parent = Path(row.path).parent
-        if self.root and os.path.normcase(str(parent)) != self.root:
-            try:
-                relative = parent.relative_to(Path(self.root))
-                folder_text = str(relative)
-            except ValueError:
-                folder_text = parent.name
-            folder_font = QFont(detail_font)
-            folder_font.setBold(True)
-            painter.setFont(folder_font)
-            painter.setPen(folder_color(colors))
-            folder_rect = QRect(text_left, rect.top() + 48, text_width, 17)
-            folder_metrics = QFontMetrics(folder_font)
-            painter.drawText(
-                folder_rect,
-                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                folder_metrics.elidedText(
-                    "in  " + folder_text, Qt.TextElideMode.ElideMiddle, text_width
-                ),
-            )
+        # Original file identity.  It is always painted, including for books in
+        # the library root; hiding root-level paths behind the tooltip made two
+        # similar records impossible to distinguish without hovering.  Middle
+        # elision keeps the drive/root and the filename visible together.
+        path_font = QFont(detail_font)
+        path_font.setBold(True)
+        painter.setFont(path_font)
+        painter.setPen(folder_color(colors))
+        path_rect = QRect(text_left, rect.top() + 48, text_width, 17)
+        path_metrics = QFontMetrics(path_font)
+        painter.drawText(
+            path_rect,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            source_path_text(row.path, path_metrics, text_width),
+        )
 
         # Topic snippet from inside the book
         if row.snippet:

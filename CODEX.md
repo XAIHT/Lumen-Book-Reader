@@ -10,6 +10,32 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.3 Persistent original-file identity — 2026-08-30
+
+The v1.5.3 patch makes a book's source file a first-class visible part of both
+library and reading surfaces. Previously the library card exposed the full path
+only through its hover tooltip, omitted even the short folder line for
+root-level books, and the open reader showed no persistent file location at all.
+
+| File | Major/minor implementation detail | Result and fallback |
+|---|---|---|
+| `lumen_reader/shelf.py` | Adds one shared `source_path_text` formatter and permanently paints `FILE · <original path-and-filename>` as the third line of every virtualized card. The formatter measures the real themed font rather than estimating characters. | A wide card shows the complete normalized path. Under pressure, Qt middle-elides the parent path while retaining the drive/root and the complete filename when they fit; the final fallback safely elides the combined prefix and filename. Root-level and nested books follow the same rule. |
+| `lumen_reader/ui.py` | Replaces the single-line reader title slot with an elastic two-line identity block: chapter title above, source path below, plus a compact copy-path button. The complete path drives the clipboard, accessible name, and tooltip; only the painted representation is shortened. | The path persists for the lifetime of the open book and is cleared when returning to the library. Copy feedback changes briefly from `⧉` to `✓`. Font/style and resize events recompute elision, and the identity block collapses before mandatory controls can overlap. |
+| `tests/test_shelf_ui.py` | Covers root and nested paths, full-path rendering at useful width, filename-preserving middle elision, and a live three-card shelf kept visible for desktop evidence. | Prevents regression to tooltip-only identity, root-path omission, or filename-destroying right elision. |
+| `tests/test_reader_header_layout.py` | Opens a live Sepia `ReaderWindow` with the original source path at 940, 1100, 1420, and 1640 logical pixels; checks visible identity, complete accessible value, reader-to-library cleanup, pairwise geometry, and restoration of optional actions. | Search, `A−`, `A+`, theme, and Speed stay disjoint at every supported width while the source filename remains visible. |
+| `pyproject.toml` / `README.md` / `CHANGELOG.md` | Advances the forward patch identity to 1.5.3 without moving or rewriting v1.5.2. | Source fallback, public badge, history, test inventory, tag, and generated release artifact can agree. |
+
+Focused behavior checks passed 9/9, and the complete affected shelf/header set
+passed 61/61 in 87.19 seconds with zero failures, errors, or skips. Both runs
+produced one full-desktop Tlamatini Shoter photograph per case; the live visual
+evidence shows the full path inside root and nested cards and the responsive
+two-line reader identity without control overlap. The uninterrupted complete
+collection then passed 369/369 with zero failures, errors, or skips in 392.311
+seconds and produced exactly 369 new full-desktop photographs. A prior complete
+attempt reported 365 consecutive passes before the validation host exited
+without a pytest failure or final XML; its four unreported uninstall-export
+safety cases passed 4/4 in isolation before the successful complete rerun.
+
 ## 0.2 Responsive reader-header repair — 2026-08-29
 
 The v1.5.2 patch repairs the scaled Sepia reader shown with the `A−` text-size

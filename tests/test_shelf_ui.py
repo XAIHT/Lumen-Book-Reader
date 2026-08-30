@@ -26,6 +26,7 @@ from lumen_reader.shelf import (  # noqa: E402
     human_bytes,
     row_border_color,
     scaled_font,
+    source_path_text,
 )
 from lumen_reader.turbo_scan import ScanSnapshot  # noqa: E402
 
@@ -483,17 +484,53 @@ def test_a_snippet_row_is_given_the_extra_height_it_needs(shelf: LibraryShelf) -
     assert tall.height() == shelf_module.ROW_HEIGHT_SNIPPET > plain.height()
 
 
-def test_the_folder_line_is_only_drawn_for_books_in_a_sub_folder(shelf: LibraryShelf) -> None:
-    """A flat library would otherwise repeat the same string on every row."""
-    delegate = BookDelegate()
-    delegate.set_root(shelf.root)
-    assert delegate.root == os.path.normcase(shelf.root)
+def test_source_path_line_is_visible_for_root_and_nested_books(shelf: LibraryShelf) -> None:
+    """A root-level file is identity, not redundant tooltip-only information."""
+    from PySide6.QtGui import QFont, QFontMetrics
 
-    rows = {shelf.model.row_at(shelf.model.index(index, 0)).title:
-            shelf.model.row_at(shelf.model.index(index, 0))
-            for index in range(shelf.model.rowCount())}
-    assert os.path.normcase(str(Path(rows["Alpha World"].path).parent)) == delegate.root
-    assert os.path.normcase(str(Path(rows["Beta Days"].path).parent)) != delegate.root
+    font = QFont("Segoe UI")
+    font.setPixelSize(12)
+    metrics = QFontMetrics(font)
+    rows = {
+        shelf.model.row_at(shelf.model.index(index, 0)).title:
+        shelf.model.row_at(shelf.model.index(index, 0))
+        for index in range(shelf.model.rowCount())
+    }
+
+    for title in ("Alpha World", "Beta Days"):
+        text = source_path_text(rows[title].path, metrics, 1200)
+        assert text.startswith("FILE")
+        assert text.endswith(Path(rows[title].path).name)
+        assert os.path.normpath(rows[title].path) in text
+
+
+def test_source_path_middle_elision_keeps_the_filename_visible() -> None:
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    font = QFont("Segoe UI")
+    font.setPixelSize(12)
+    metrics = QFontMetrics(font)
+    path = r"C:\Books\Research\Energetic Materials\pasteexplosivepaper.pdf"
+    text = source_path_text(path, metrics, 330)
+
+    assert text.startswith("FILE")
+    assert "…" in text
+    assert text.endswith("pasteexplosivepaper.pdf")
+
+
+def test_source_paths_are_visible_in_the_live_shelf(shelf: LibraryShelf) -> None:
+    """Keep the real card surface open for the per-test visual capture."""
+    from PySide6.QtTest import QTest
+
+    shelf.resize(1400, 760)
+    shelf.show()
+    shelf.raise_()
+    shelf.activateWindow()
+    QApplication.processEvents()
+    QTest.qWait(250)
+
+    assert shelf.view.isVisible()
+    assert shelf.model.rowCount() == 3
 
 
 # ───────────────────────────── the row outline ────────────────────────────

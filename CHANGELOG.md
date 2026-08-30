@@ -19,6 +19,34 @@ No changes yet.
 
 ---
 
+## [1.5.3] — 2026-08-30
+
+Patch release: permanent original-file identity on the library shelf and in the
+open reader.
+
+### Added
+
+- **Every library card now paints its original path as part of the card.** This
+  includes files stored directly in the library root, so the identifying
+  location is no longer available only after hovering for a tooltip.
+- **The open reader keeps the same identity in its top bar.** A compact second
+  line beneath the chapter title shows the source path, and the adjacent copy
+  control copies the complete unshortened value with visible confirmation.
+
+### Changed
+
+- Long paths use middle elision on the parent folders while preserving the
+  filename whenever the available width permits. The complete value remains in
+  the label's accessible name and tooltip.
+- The existing responsive-header policy now treats the chapter title and source
+  path as one elastic identity block. Search, `A−`, `A+`, theme, and Speed keep
+  their non-overlap guarantees down to the 940-pixel minimum window.
+- Added four net regression cases for root and nested shelf paths, filename-safe
+  elision, the live painted shelf, reader identity visibility, and cleanup when
+  returning to the library. The complete collection is 369 tests.
+
+---
+
 ## [1.5.2] — 2026-08-29
 
 Patch release: responsive reader-header repair for Windows display scaling and

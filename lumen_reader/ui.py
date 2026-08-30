@@ -70,7 +70,7 @@ from .pdf_book import PdfBook, PdfError, PdfPasswordRequired
 from .library_index import DEFAULT_TEXT_BUDGET, LibraryIndex, default_index_path, normalize_root
 from .scan_monitor import ScanMonitorDialog
 from .settings_dialog import ConfigurationDialog
-from .shelf import LibraryShelf
+from .shelf import LibraryShelf, source_path_text
 from .turbo_scan import ScanConfig, TurboScanner
 from .storage import ReaderStore
 from .speed_reader import (
@@ -638,6 +638,56 @@ def rsvp_return_highlight_script(word_index: int, word_count: int) -> str:
 def control_link_activation_allowed(modifiers: Qt.KeyboardModifier) -> bool:
     """Return whether a physical Ctrl modifier authorizes a link action."""
     return bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+
+
+class SourcePathLabel(QLabel):
+    """One-line original path that keeps the root and filename visible."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._source_path = ""
+        self.setObjectName("sourcePathLabel")
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.hide()
+
+    @property
+    def source_path(self) -> str:
+        return getattr(self, "_source_path", "")
+
+    def set_source_path(self, path: str | Path | None) -> None:
+        self._source_path = "" if path is None else str(path)
+        self.setAccessibleName(
+            f"Original file: {self._source_path}" if self._source_path else "No book file open"
+        )
+        self.setToolTip(
+            f"Original file\n{self._source_path}\nUse the copy button to copy this path."
+            if self._source_path
+            else ""
+        )
+        self._refresh_text()
+        self.setVisible(bool(self._source_path))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.fontMetrics().height() + 2)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def changeEvent(self, event: Any) -> None:
+        super().changeEvent(event)
+        if event.type() in {QEvent.Type.FontChange, QEvent.Type.StyleChange}:
+            self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        path = getattr(self, "_source_path", "")
+        if not path:
+            super().setText("")
+            return
+        super().setText(
+            source_path_text(path, self.fontMetrics(), self.contentsRect().width())
+        )
 
 
 def _enable_precision_scrolling(view: QAbstractItemView) -> None:
@@ -1719,18 +1769,43 @@ class ReaderWindow(QMainWindow):
         self.header_divider.setObjectName("headerDivider")
         self.header_layout.addWidget(self.header_divider)
 
+        self.reader_identity = QWidget()
+        self.reader_identity.setObjectName("readerIdentity")
+        self.reader_identity.setMinimumWidth(0)
+        self.reader_identity.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        identity_layout = QVBoxLayout(self.reader_identity)
+        identity_layout.setContentsMargins(0, 0, 0, 0)
+        identity_layout.setSpacing(0)
+
         self.chapter_heading = QLabel("Your reading room")
         self.chapter_heading.setObjectName("chapterHeading")
-        # Chapter names come from the book and can be arbitrarily long.  A
-        # QLabel normally advertises the full text width as its minimum.  That
-        # made Qt preserve the title by placing the controls to its right on
-        # top of each other when Windows display scaling reduced the available
-        # logical width.  The title is the one elastic item in the header.
+        # Chapter names and source paths come from the book and can be
+        # arbitrarily long.  Both lines are elastic so document metadata can
+        # never push the controls to their right on top of each other.
         self.chapter_heading.setMinimumWidth(0)
         self.chapter_heading.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self.header_layout.addWidget(self.chapter_heading, 1)
+        identity_layout.addWidget(self.chapter_heading)
+
+        source_row = QHBoxLayout()
+        source_row.setContentsMargins(0, 0, 0, 0)
+        source_row.setSpacing(2)
+        self.source_path_label = SourcePathLabel()
+        source_row.addWidget(self.source_path_label, 1)
+        self.copy_source_path_button = QToolButton()
+        self.copy_source_path_button.setObjectName("sourcePathCopy")
+        self.copy_source_path_button.setText("⧉")
+        self.copy_source_path_button.setFixedSize(18, 16)
+        self.copy_source_path_button.setToolTip("Copy the original file path")
+        self.copy_source_path_button.setAccessibleName("Copy the original file path")
+        self.copy_source_path_button.clicked.connect(self._copy_source_path)
+        self.copy_source_path_button.hide()
+        source_row.addWidget(self.copy_source_path_button)
+        identity_layout.addLayout(source_row)
+        self.header_layout.addWidget(self.reader_identity, 1)
 
         self.reader_search_cluster = QFrame()
         self.reader_search_cluster.setObjectName("readerSearchCluster")
@@ -2300,8 +2375,31 @@ class ReaderWindow(QMainWindow):
         self.reader_search_cluster.show()
         self.speed_reader_button.show()
         self.mark_button.setEnabled(True)
+        self._set_source_path(self.book.path)
         self._update_header_responsiveness()
         self.setWindowTitle(f"{self.book.metadata.title} — Lumen")
+
+    def _set_source_path(self, path: str | Path | None) -> None:
+        """Expose the original file identity in the reader chrome."""
+
+        self.source_path_label.set_source_path(path)
+        has_path = bool(self.source_path_label.source_path)
+        self.copy_source_path_button.setVisible(has_path)
+        self.copy_source_path_button.setEnabled(has_path)
+        self._reset_source_copy_button()
+
+    def _copy_source_path(self) -> None:
+        path = self.source_path_label.source_path
+        if not path:
+            return
+        QApplication.clipboard().setText(path)
+        self.copy_source_path_button.setText("✓")
+        self.copy_source_path_button.setToolTip("Original file path copied")
+        QTimer.singleShot(1100, self._reset_source_copy_button)
+
+    def _reset_source_copy_button(self) -> None:
+        self.copy_source_path_button.setText("⧉")
+        self.copy_source_path_button.setToolTip("Copy the original file path")
 
     def return_to_library(self) -> None:
         """Capture the latest scroll offset, save it, and reveal the main bookshelf."""
@@ -2328,6 +2426,7 @@ class ReaderWindow(QMainWindow):
         self.speed_reader_button.hide()
         self.mark_button.setEnabled(False)
         self.chapter_heading.setText("Your reading room")
+        self._set_source_path(None)
         self._update_header_responsiveness()
         self.setWindowTitle("Lumen — Book Reader")
         self._populate_welcome(library_books(Path.cwd()))
@@ -3617,11 +3716,10 @@ class ReaderWindow(QMainWindow):
             if widget is None or widget.isHidden():
                 continue
             visible_items += 1
-            if widget is self.chapter_heading:
-                # The stretch label is deliberately allowed to collapse; Qt
-                # clips its long text rather than sacrificing toolbar geometry.
-                # Still reserve a useful title preview while deciding which
-                # lower-priority actions to collapse.
+            if widget is self.reader_identity:
+                # The two-line identity block is deliberately allowed to
+                # collapse; reserve a useful title/path preview only while
+                # deciding which lower-priority actions to hide.
                 required += 160 if not self.reader_search_cluster.isHidden() else 120
                 continue
             hint = widget.minimumSizeHint().width()
@@ -3903,6 +4001,9 @@ class ReaderWindow(QMainWindow):
             #libraryButton:hover {{ color: #09130f; background: {c['accent']}; }}
             #libraryButton:pressed {{ padding-left: 11px; padding-right: 15px; }}
             #chapterHeading {{ color: {c['muted']}; font-size: 13px; padding-left: 5px; }}
+            #sourcePathLabel {{ color: {c['accent']}; font-size: 9px; font-weight: 650; letter-spacing: 0.35px; padding-left: 5px; }}
+            #sourcePathCopy {{ color: {c['accent']}; background: transparent; border: none; padding: 0; font-size: 10px; font-weight: 800; }}
+            #sourcePathCopy:hover {{ color: #09130f; background: {c['accent']}; border-radius: 4px; }}
             #headerDivider {{ color: {c['line']}; margin: 8px 5px; }}
             QPushButton {{ color: {c['fg']}; background: transparent; border: 1px solid transparent; border-radius: 7px; padding: 7px 11px; }}
             QPushButton:hover {{ background: {c['hover']}; }}
