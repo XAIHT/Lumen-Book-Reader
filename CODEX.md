@@ -10,6 +10,37 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.4 RSVP clicked-word launch repair — 2026-08-30
+
+The v1.5.4 patch repairs the case where the green `START HERE` marker remained
+on the selected word and the RSVP player never appeared. The exact reported
+`#Annoyomics - Risto Mejide.epub` file exposed three underlying boundaries:
+QtWebEngine could consume the native release event, malformed XHTML could shift
+visible and RSVP token indexes, and an EPUB comment was accidentally serialized
+as visible prose while remaining correctly absent from the RSVP token stream.
+
+| File | Major/minor implementation detail | Result and fallback |
+|---|---|---|
+| `lumen_reader/ui.py` — browser payload | A targeting click now records the selected token, its visible DOM index, and up to six visible tokens before and after it. EPUB text nodes and PDF `.pdf-word` elements use the same bounded context contract. | Normal documents retain their exact direct-index path. Shifted documents carry enough local identity to reconcile the two token streams without changing book content. |
+| `lumen_reader/ui.py` — conservative resolver | `resolve_rsvp_target_word_index` first accepts an exact index/token match. When indexes differ, it scores contiguous context around every same-token candidate and accepts only a unique best match with at least two corroborating context tokens. | Repeated words resolve to the one actually clicked. Ties, empty words, malformed indexes, insufficient evidence, and missing candidates return `None`, leaving targeting armed rather than launching at a guessed location. Legacy payloads without context retain the narrow unique-within-eight fallback. |
+| `lumen_reader/ui.py` — Chromium handoff | A 60 ms timer asks the page for a recorded click only while RSVP targeting is active. The existing Qt mouse-release event filter remains the low-latency path; either path consumes the same one-shot payload. | A swallowed native release no longer strands the overlay. Cancellation and successful launch both stop the timer and remove the injected page controls before opening the player. |
+| `lumen_reader/book.py` | Removes BeautifulSoup `Comment` nodes before sanitized page reconstruction and before plain-text extraction. | Publisher/editor notes can no longer be converted into visible selectable prose. The rendered first word and RSVP first word remain aligned; unsafe tags and head-metadata exclusions are unchanged. |
+| `tests/test_rsvp_targeting.py` | Extends the live Chromium payload assertion, simulates a JavaScript pointer-down with no Qt release and a browser-only prefix, verifies unique shifted duplicate resolution, and verifies ambiguous context refusal. | Pins both reported root causes while protecting safe non-guess behavior and teardown. The repository now contains 372 collected tests. |
+| `tests/test_epub_books.py` | Builds a synthetic EPUB chapter containing a publisher comment and verifies that neither rendered reader text nor `SpeedReadingDocument` contains it. | Prevents the exact `se usa el …` leak shown in the installed application. The repository now contains 373 collected tests. |
+| `pyproject.toml` / `README.md` / `CHANGELOG.md` | Advances the forward patch identity to 1.5.4 without moving or rewriting v1.5.3. | Source metadata, public badge, release history, test inventory, and generated artifact can agree. |
+
+Focused targeting checks passed 4/4 with one full-desktop Tlamatini Shoter
+capture per test. The exact reported EPUB then passed a real `ReaderWindow` /
+`SpeedReaderDialog` smoke test: clicking `cuesta` opened chapter 1 at internal
+word 16 and reached the countdown stage. The affected EPUB, PDF, link-policy,
+and RSVP set passed 37/37 with 37 per-test desktop captures. After the screenshot
+revealed that `se` was actually publisher-comment text, the combined EPUB,
+targeting, and exact-book replay passed 21/21: the comment was absent, `Te` was
+the first visible token, and it launched chapter 1 at word 0/countdown. The
+uninterrupted complete v1.5.4 collection then passed 373/373 with zero failures,
+errors, or skips in 416.62 seconds and produced exactly 373 new full-desktop
+Tlamatini Shoter captures.
+
 ## 0.3 Persistent original-file identity — 2026-08-30
 
 The v1.5.3 patch makes a book's source file a first-class visible part of both

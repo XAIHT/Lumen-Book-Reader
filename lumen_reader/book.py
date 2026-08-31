@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Tag
 
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
 from .text_safety import clean_unicode_text
@@ -342,6 +342,8 @@ class EpubBook:
         except OSError as exc:
             raise EpubError(f"Could not read chapter: {chapter.title}") from exc
         soup = BeautifulSoup(raw, "html.parser")
+        for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+            comment.extract()
         for tag in soup.find_all(_UNSAFE_TAGS):
             tag.decompose()
         for tag in soup.find_all(True):
@@ -412,6 +414,8 @@ td, th {{ border: 1px solid color-mix(in srgb, {muted}, transparent 55%); paddin
         if index not in self._search_cache:
             raw = self._disk_path(self.chapters[index].href).read_bytes()
             soup = BeautifulSoup(raw, "html.parser")
+            for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+                comment.extract()
             for tag in soup.find_all(_UNSAFE_TAGS | {"style"}):
                 tag.decompose()
             # RSVP indexes must describe the text the reader can actually point at.

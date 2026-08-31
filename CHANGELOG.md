@@ -19,6 +19,36 @@ No changes yet.
 
 ---
 
+## [1.5.4] — 2026-08-30
+
+Patch release: reliable click-to-launch handoff for RSVP starting-word targeting.
+
+### Fixed
+
+- **Clicking the selected starting word now always launches Speed Reader.** A
+  short-lived 60 ms poll consumes the click recorded inside Chromium even when
+  QtWebEngine does not propagate the corresponding native mouse-release event
+  to the main window. The existing native release path remains as the immediate
+  fast path.
+- **Malformed EPUB layout text can no longer shift the selected RSVP word out
+  of range.** The browser supplies six visible tokens on either side of the
+  click. Lumen maps that context against the actual Speed Reader token stream
+  and launches only when one candidate matches uniquely; ambiguous clicks are
+  left armed instead of jumping to the wrong repeated word.
+- **EPUB comments are no longer painted as book text.** The reported leading
+  `se usa el …` phrase was an internal publisher comment accidentally converted
+  to a text node during sanitized-page reconstruction. Comments are now removed
+  before both rendering and plain-text extraction, so the first visible word
+  and the first RSVP word are the same.
+- Targeting cleanup stops the fallback timer, removes the page overlay, and
+  restores the Speed button before the real player opens.
+- Added four net regression cases for Chromium-only click delivery,
+  context-based correction of a shifted repeated word, and refusal to guess an
+  ambiguous target, plus EPUB-comment exclusion from both reader and RSVP. The
+  complete collection is 373 tests.
+
+---
+
 ## [1.5.3] — 2026-08-30
 
 Patch release: permanent original-file identity on the library shelf and in the

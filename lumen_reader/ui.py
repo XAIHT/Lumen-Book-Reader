@@ -6,7 +6,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import quote
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt, QUrl, Signal
@@ -386,6 +386,12 @@ RSVP_TARGETING_SCRIPT = r"""
     return nodes;
   };
 
+  const visibleWords = () => {
+    const pdfWords = [...document.querySelectorAll('.pdf-word')];
+    if (pdfWords.length) return pdfWords.map((word) => (word.textContent || '').trim());
+    return textNodes().flatMap((node) => [...node.data.matchAll(TOKEN_RE)].map((match) => match[0]));
+  };
+
   const rectForRange = (range) => {
     const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
     if (!rects.length) return null;
@@ -462,7 +468,15 @@ RSVP_TARGETING_SCRIPT = r"""
   const onDown = (event) => {
     if (event.button !== 0) return;
     const selected = wordAt(event.clientX, event.clientY);
-    if (selected) picked = {word: selected.word, wordIndex: selected.wordIndex};
+    if (selected) {
+      const words = visibleWords();
+      picked = {
+        word: selected.word,
+        wordIndex: selected.wordIndex,
+        contextBefore: words.slice(Math.max(0, selected.wordIndex - 6), selected.wordIndex),
+        contextAfter: words.slice(selected.wordIndex + 1, selected.wordIndex + 7)
+      };
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
   };
@@ -633,6 +647,60 @@ def rsvp_return_highlight_script(word_index: int, word_count: int) -> str:
     return RSVP_RETURN_HIGHLIGHT_SCRIPT.replace(
         "__LUMEN_START_INDEX__", str(max(0, int(word_index)))
     ).replace("__LUMEN_WORD_COUNT__", str(max(1, int(word_count))))
+
+
+def resolve_rsvp_target_word_index(
+    words: Sequence[str], payload: dict[str, Any]
+) -> int | None:
+    """Map a clicked DOM token back to the matching RSVP word conservatively."""
+    try:
+        dom_index = int(payload["wordIndex"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    clicked_word = str(payload.get("word") or "")
+    if not clicked_word:
+        return None
+    if 0 <= dom_index < len(words) and words[dom_index] == clicked_word:
+        return dom_index
+
+    before_value = payload.get("contextBefore")
+    after_value = payload.get("contextAfter")
+    before = (
+        [str(token) for token in before_value[-6:]]
+        if isinstance(before_value, list)
+        else []
+    )
+    after = (
+        [str(token) for token in after_value[:6]]
+        if isinstance(after_value, list)
+        else []
+    )
+    candidates = [index for index, word in enumerate(words) if word == clicked_word]
+
+    if not before and not after:
+        nearby = [index for index in candidates if abs(index - dom_index) <= 8]
+        return nearby[0] if len(nearby) == 1 else None
+
+    def context_score(index: int) -> int:
+        score = 0
+        for offset, token in enumerate(reversed(before), 1):
+            if index - offset < 0 or words[index - offset] != token:
+                break
+            score += 1
+        for offset, token in enumerate(after, 1):
+            if index + offset >= len(words) or words[index + offset] != token:
+                break
+            score += 1
+        return score
+
+    scored = [(context_score(index), index) for index in candidates]
+    if not scored:
+        return None
+    best_score = max(score for score, _index in scored)
+    required_score = min(2, len(before) + len(after))
+    best = [index for score, index in scored if score == best_score]
+    return best[0] if best_score >= required_score and len(best) == 1 else None
 
 
 def control_link_activation_allowed(modifiers: Qt.KeyboardModifier) -> bool:
@@ -1711,6 +1779,9 @@ class ReaderWindow(QMainWindow):
         self.selection_prompt_timer = QTimer(self)
         self.selection_prompt_timer.setSingleShot(True)
         self.selection_prompt_timer.timeout.connect(self._show_selection_prompt)
+        self.speed_target_poll_timer = QTimer(self)
+        self.speed_target_poll_timer.setInterval(60)
+        self.speed_target_poll_timer.timeout.connect(self._take_speed_target_pick)
         self.marks_dialog = MarksManagerDialog(self, self.marks_store)
         self.marks_dialog.open_requested.connect(self._open_global_mark)
         self.marks_dialog.changed.connect(self._populate_bookmarks)
@@ -2651,10 +2722,12 @@ class ReaderWindow(QMainWindow):
         self.speed_reader_button.setToolTip("Cancel choosing the RSVP starting word (Esc)")
         self.speed_reader_button.setAccessibleName("Cancel RSVP starting-word selection")
         self.web.page().runJavaScript(RSVP_TARGETING_SCRIPT)
+        self.speed_target_poll_timer.start()
         self.web.setFocus()
 
     def _cancel_speed_start_target(self) -> None:
         """Leave targeting mode without changing the reader's place."""
+        self.speed_target_poll_timer.stop()
         if hasattr(self, "web"):
             self.web.page().runJavaScript(RSVP_TARGET_STOP_SCRIPT)
         self._speed_target_active = False
@@ -2683,30 +2756,15 @@ class ReaderWindow(QMainWindow):
             data = None
         if not isinstance(data, dict):
             return
-        try:
-            word_index = int(data["wordIndex"])
-        except (KeyError, TypeError, ValueError):
-            return
         document = self._speed_target_document
         settings = self._speed_target_settings
         if document is None or settings is None or not (0 <= self.chapter_index < len(document.chapters)):
             self._cancel_speed_start_target()
             return
         words = document.chapters[self.chapter_index].words
-        if not (0 <= word_index < len(words)):
+        word_index = resolve_rsvp_target_word_index(words, data)
+        if word_index is None:
             return
-
-        clicked_word = str(data.get("word") or "")
-        if clicked_word != words[word_index]:
-            # A malformed EPUB can contain display-only nodes.  Resolve only a
-            # unique nearby copy of the clicked token; never silently jump to a
-            # distant occurrence that the pointer did not identify.
-            low = max(0, word_index - 8)
-            high = min(len(words), word_index + 9)
-            nearby = [i for i in range(low, high) if words[i] == clicked_word]
-            if len(nearby) != 1:
-                return
-            word_index = nearby[0]
 
         chapter_index = self.chapter_index
         self._cancel_speed_start_target()

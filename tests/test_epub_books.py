@@ -6,6 +6,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from lumen_reader.book import EpubBook
+from lumen_reader.models import Chapter
 from lumen_reader.speed_reader import SpeedReadingDocument
 
 
@@ -103,3 +104,23 @@ def test_local_chapter_links_map_back_to_the_spine(epub_path: Path) -> None:
 
 def test_repository_contains_test_books() -> None:
     assert len(BOOKS) >= 2, "The repository EPUB fixtures are missing"
+
+
+def test_epub_comments_never_become_visible_reader_or_rsvp_text(tmp_path: Path) -> None:
+    chapter_path = tmp_path / "chapter.xhtml"
+    chapter_path.write_text(
+        "<html><body><!-- internal production note --><p>Visible start</p></body></html>",
+        encoding="utf-8",
+    )
+    book = EpubBook.__new__(EpubBook)
+    book.extract_dir = tmp_path
+    book.chapters = [
+        Chapter("chapter", "chapter.xhtml", "application/xhtml+xml", "Chapter")
+    ]
+    book._search_cache = {}
+
+    rendered = BeautifulSoup(book.chapter_html(0), "html.parser")
+    document = SpeedReadingDocument.from_book(book)
+
+    assert "internal production note" not in rendered.get_text(" ", strip=True)
+    assert document.chapters[0].words == ["Visible", "start"]
