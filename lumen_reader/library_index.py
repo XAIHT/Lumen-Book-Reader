@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterator, Sequence
 from xml.etree import ElementTree as ET
 
 from .text_safety import clean_unicode_text, require_utf8
+from .passage_index import delete_book_passages, ensure_passage_schema
 
 BOOK_SUFFIXES = {".epub", ".pdf"}
 
@@ -702,6 +703,7 @@ class LibraryIndex:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(str(self.path), check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA foreign_keys=ON")
         # WAL lets the shelf keep searching while a scan is still writing.
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=NORMAL")
@@ -721,6 +723,7 @@ class LibraryIndex:
         # at all against a real 7.79 GB index written by the previous version.
         self._migrate()
         self.connection.executescript(SCHEMA)
+        ensure_passage_schema(self.connection)
         self._adopt_fresh_database()
         self.connection.commit()
 
@@ -908,6 +911,7 @@ class LibraryIndex:
         for chunk in _chunked(stale, 400):
             marks = ",".join("?" * len(chunk))
             self.drop_fts_rows(cursor, chunk)
+            delete_book_passages(cursor, chunk)
             cursor.execute(f"DELETE FROM books       WHERE id      IN ({marks})", chunk)
         self.connection.commit()
         return len(stale)
@@ -1144,6 +1148,7 @@ class LibraryIndex:
                 continue
             id_marks = ",".join("?" * len(ids))
             self.drop_fts_rows(cursor, ids)
+            delete_book_passages(cursor, ids)
             cursor.execute(f"DELETE FROM books       WHERE id      IN ({id_marks})", ids)
         self.connection.commit()
 

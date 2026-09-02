@@ -4,11 +4,63 @@
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
+> Current implementation release: **v1.7.0** (2026-09-02)
 > Project author and publisher: **Angela López Mendoza / @angelahack1**
 
 This is the code-oriented memory of the project: what exists, when it arrived, how the major systems work, which details are minor but load-bearing, what degrades gracefully, and where comments or release prose differ from executable behavior. It is deliberately based on the repository and Git history, not on promotional inference.
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
+
+## 0.5 Lumen MCP implementation and v1.7.0 release — 2026-09-02
+
+The architecture in `LumenBookReader-MCPDesign.md` is now executable rather
+than aspirational. The implementation is additive: it preserves the existing
+desktop index/catalog and Turbo Sweep behavior, adds revisioned passage storage,
+and exposes only bounded read operations through the default MCP surface.
+
+| File/system | Major implementation | Minor/load-bearing details and fallback |
+|---|---|---|
+| `lumen_reader/runtime_paths.py` | Discovers the same per-user state/index location as Qt without importing Qt into the sidecar. | `LUMEN_DATA_DIR` and `LUMEN_INDEX_PATH` provide explicit test/portable overrides; malformed state returns an empty object. |
+| `lumen_reader/passage_models.py` | Defines source sections, deterministic chunks, build reports, extractor/chunker versions, and coverage vocabulary. | Coverage distinguishes `complete`, `capped`, `metadata_only`, `no_text`, `locked`, and `failed`; no generic “indexed” label hides locator quality. |
+| `lumen_reader/passage_chunker.py` | Produces bounded overlapping Unicode-safe passages with exact half-open character/token offsets and SHA-256. | Sentence/paragraph boundaries are preferred, whitespace/hard bounds are deterministic fallbacks, and empty/invalid scalar input yields no phantom passage. |
+| `lumen_reader/passage_index.py` | Adds `rag_*` documents, revisions, sections, passages, FTS row map, corpus revisions, and vector manifest beside existing tables. | Per-book staging commits bound WAL/memory; activation is atomic; old active revisions survive build failure; FTS deletes use mapped row IDs. |
+| `lumen_reader/passage_builder.py` | Streams complete EPUB spine documents and PDF pages into staged revisions. | ZIP expansion/section limits, normalized safe spine paths, source identity before/after extraction, explicit password/no-text states, cancellation, and one-document-at-a-time memory bounds. |
+| `lumen_reader/library_index.py` / `turbo_scan.py` | The ordinary sweep stays on the original fast catalog/content-FTS path and never chunks MCP passages in its single writer. | MCP retrieval falls back immediately to capped book-level content; the explicit resumable passage builder owns exact page/spine activation; prune/delete still removes dependent passage rows. |
+| `lumen_reader/retrieval/` | Implements bounded root-scoped glob, lexical plus offline-semantic search, exact/regex grep, related retrieval, resources, signed citations/cursors, and query planning. | Query-only connection semaphore, safe FTS expression builder, bundled Princeton WordNet 3.0 expansion without network calls, regex timeout/candidate/text budgets, no caller paths, opaque root IDs, revision/hash validation, output limits, exact normalized-author and subject-overlap filters, and passage-only adjacency. |
+| `lumen_reader/mcp_server/server.py` / `tools.py` | Registers seven stable public read-only tools with idempotent/non-destructive annotations and untrusted-content instructions. | Domain errors return `isError=true` plus structured JSON; no admin/write tool is registered in the default profile. |
+| `lumen_reader/mcp_server/resources.py` / `prompts.py` | Registers bounded `lumen://` book/section/passage/citation/status resources and optional research prompts. | There is no `file://` adapter; IDs always resolve through authorized indexed rows. Prompts add workflow guidance, not hidden policy. |
+| `lumen_reader/mcp_server/compat.py` | Bridges the stable v2 `MCPServer` API and installed late-v1 `FastMCP` API. | Constructor/type aliases and structured error field names are selected by inspected SDK surface rather than a version-string guess. |
+| `lumen_reader/mcp_server/cli.py` / `diagnostics.py` | Adds `serve`, `status`, `doctor`, `index build`, `config emit`, and `config validate`. | STDIO logs stay on stderr; doctor is non-repairing and avoids a multi-gigabyte integrity scan; unauthenticated HTTP is loopback-only. |
+| `lumen_reader/mcp_server/config_export.py` | Generates and validates strict portable `LumenBookReader.json` from a typed launch model. | Exact wrapper/server/fields/args/env, duplicate-key/BOM/NUL/placeholder/secret rejection, absolute executable-mode agreement, canonical UTF-8+LF, idempotence, same-directory atomic replacement, and required backup for forced overwrite. |
+| `schemas/` / `packaging/` | Supplies the separate internal JSON Schema and placeholder-only release template. | Neither artifact contains a real username, library root, index location, credential, or claim of Codex auto-discovery. |
+| `lumen_mcp.py` / `build.py` | Freezes a separate console one-file `LumenMCP.exe` and requires it in `pkg.zip`. | MCP cannot contaminate Qt GUI startup or lose STDIO behind `--windowed`; the sidecar avoids Qt/NLTK packaging while retaining EPUB/PDF dependencies. |
+| `tests/test_passage_*`, `test_retrieval_service.py`, `test_mcp_*` | Adds 15 focused contract and subprocess tests. | Real MCP initialize/list/call/shutdown proves stdout framing; errors, annotations, resources, exact matches, citations, complete activation, legacy-index fallback, exact metadata relationships, ambiguous-seed refusal, config refusal/backup, and canonical bytes are pinned. Total collection: 388. |
+
+Validation on the actual 3.107 GB installed index (12,130 books) was read-only:
+doctor found the catalog healthy, identified that the installed copy predates
+the passage schema, and an `auto` query returned real radio-frequency books via
+`sqlite-fts5-book-head` with the required capped-coverage warning. No installed
+index migration, sweep, or book mutation was performed by that check.
+
+Protocol compatibility was exercised twice: the workstation's pre-existing
+MCP SDK 1.28.1 passed the real subprocess STDIO and loopback Streamable HTTP
+flows, then an isolated MCP SDK 2.1.1 installation passed modern discovery,
+seven-tool schema listing, structured `lumen_status`, and structured
+`INDEX_NOT_FOUND` error delivery. The isolation did not replace the user's
+active Python packages.
+
+Release freezing was also exercised outside the workspace with the isolated
+SDK 2.1.1 dependency set and the exact `build.py` exclusion policy. PyInstaller
+produced a 54,064,607-byte one-file console executable from the final source.
+That exact binary—not a source-module substitute—started over STDIO,
+advertised the seven public tools, reported `health=ready` for a temporary
+three-book corpus, returned only the exact-author book for `same_author`,
+returned the one-label-overlap book for `same_subject`, and returned
+`isError=true` with structured `INVALID_ARGUMENT` when adjacency lacked a
+passage seed. The same frozen process emitted and revalidated a canonical
+314-byte installed-mode `LumenBookReader.json` in a temporary directory. No
+release archive, installed application, user configuration, or real library
+index was overwritten by this proof.
 
 ## 0.4 RSVP clicked-word launch repair — 2026-08-30
 

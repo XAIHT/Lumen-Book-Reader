@@ -1176,6 +1176,7 @@ class TurboScanner:
         """
         connection = sqlite3.connect(str(self.database), timeout=60.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute("PRAGMA temp_store=MEMORY")
@@ -1930,6 +1931,11 @@ class TurboScanner:
             " content_row = excluded.content_row",
             (book_id, meta_row, content_row),
         )
+        # Keep the interactive library sweep on its original fast path.  MCP
+        # passages are a second, much heavier index (chunking plus another FTS
+        # write) and are built by the resumable ``lumen-mcp index build`` job.
+        # Coupling that work to this single writer made every extractor wait on
+        # SQLite and made a healthy sweep look frozen between large commits.
 
     # ── the rate sampler ───────────────────────────────────────────────────
 

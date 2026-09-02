@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.5.4" src="https://img.shields.io/badge/LUMEN-v1.5.4-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.7.0" src="https://img.shields.io/badge/LUMEN-v1.7.0-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -148,6 +148,38 @@ There is one build of Lumen, and it adapts. Extraction and search are replaceabl
 The **Acceleration & scale** tab shows exactly what was detected and, when a faster backend is unavailable, precisely which piece is missing — distinguishing *"no CUDA-capable GPU on this machine"* from *"the hardware is ready, but no kernel is registered in this build"*. **It never claims a GPU is doing work that the CPU is doing.** Today no GPU kernel ships, so both automatic paths resolve to the CPU fleet and SQLite FTS5, and the tab says so.
 
 The design, the schema, the pipeline, the measured numbers, and the current limits are all in **[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md)**.
+
+### Lumen MCP: your complete shelf as on-demand AI context
+
+Lumen now includes a separate, headless Model Context Protocol sidecar. It gives Codex, Tlamatini, and other MCP clients a bounded **Globber + Grepper + passage-RAG** view of the books already authorized and indexed by Lumen—without preloading the corpus into a model and without accepting arbitrary filesystem paths.
+
+| MCP capability | What it exposes | Safety/fallback truth |
+|---|---|---|
+| `lumen_status` | Roots, corpus revision, coverage, limits, index/backend/hardware health | Works even before the passage schema exists; reports that condition rather than pretending exact coverage. |
+| `lumen_glob` | Relative paths, filenames, and metadata through safe glob patterns | Root IDs come from status; `..`, absolute paths, drives, and UNC traversal are rejected. |
+| `lumen_grep` | Literal, phrase, FTS, or time-bounded regex matches | Exact ranges are verified against passage text. Regex never falls back unless the caller explicitly requests one. |
+| `lumen_search` | Ranked topical passages with book diversity | SQLite FTS5 plus bounded offline Princeton WordNet 3.0 semantic expansion; no network model call is required. |
+| `lumen_related` | Adjacent/conceptual/author/subject/counterevidence candidates | Author identity and subject overlap are enforced as metadata filters; adjacent mode requires an exact passage seed; contrasting results are labeled candidates, never asserted contradictions. |
+| `lumen_get_book` | Metadata, coverage, TOC, and bounded passage links | Opaque IDs resolve through the index; no `file://` resource is exposed. |
+| `lumen_explain_query` | Query plan, fixed prefix, selected backend, and limits | Never exposes raw SQL, keys, credentials, or bypass details. |
+
+The normal reader sweep deliberately remains the fast catalog path: it writes book metadata and the existing capped full-text row, without chunking or passage-FTS work. MCP search, grep, glob, and metadata-related tools use that legacy tier immediately with truthful book-level precision. The separate resumable builder streams EPUB spine documents or PDF pages through bounded chunks and atomically activates exact passage coverage after each source succeeds; interruption or failure leaves prior active revisions readable. Signed citation IDs are emitted only for activated passages and bind book, passage, revision, and content hash.
+
+```powershell
+# Source checkout: health and a real MCP STDIO server
+python -m lumen_reader.mcp_server doctor --json
+python -m lumen_reader.mcp_server serve --stdio
+
+# Build exact complete passage coverage after the ordinary Lumen sweep
+python -m lumen_reader.mcp_server index build
+
+# Generate the strict portable development descriptor explicitly
+python -m lumen_reader.mcp_server config emit --mode development `
+  --executable "C:\path\to\.venv\Scripts\python.exe" `
+  --output "C:\path\to\LumenBookReader.json"
+```
+
+Release builds add a separate console `LumenMCP.exe` beside `Lumen.exe`; the reader remains a windowed ONEDIR application and does not import the MCP SDK during GUI startup. STDIO is the default. Loopback-only Streamable HTTP is available explicitly with `LumenMCP.exe serve --http`; unauthenticated non-loopback binding fails closed. The complete protocol, schema, security, transport, GPU/DirectStorage truth table, failure matrix, and portable configuration contract are in **[LumenBookReader-MCPDesign.md](LumenBookReader-MCPDesign.md)**.
 
 ## ⚙ Configuration
 
@@ -313,7 +345,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-**373 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, EPUB-comment exclusion, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, persistent original-file identity on shelf cards and in the reader header, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, Chromium-consumed click fallback, context-verified RSVP mapping across malformed EPUB display-only text, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
+**388 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, EPUB-comment exclusion, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, persistent original-file identity on shelf cards and in the reader header, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, Chromium-consumed click fallback, context-verified RSVP mapping across malformed EPUB display-only text, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, deterministic passage chunking/revision activation, exact glob/grep/search/citation retrieval, enforced related-author/subject metadata filters and adjacent-seed validation, legacy-index fallback before passage migration, strict portable MCP configuration, a real subprocess MCP STDIO handshake and structured error path, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
 
 ## 📚 Documentation
 

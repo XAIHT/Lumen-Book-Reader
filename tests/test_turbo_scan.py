@@ -59,15 +59,18 @@ def fleet_config(**overrides: object) -> ScanConfig:
 
 
 def test_a_real_process_fleet_indexes_every_book(library: Path, tmp_path: Path) -> None:
-    final = sweep(tmp_path / "i.db", library, fleet_config())
+    database = tmp_path / "i.db"
+    final = sweep(database, library, fleet_config())
     assert final.phase == "done"
     assert final.error == ""
     assert final.books_found == 4
     assert final.books_indexed == 4
     assert final.books_failed == 0
-    with LibraryIndex(tmp_path / "i.db") as index:
+    with LibraryIndex(database) as index:
         assert index.counts(library).total == 4
         assert [row.title for row in index.search(library, "Delta")] == ["Delta Deep"]
+        assert index.connection.execute("SELECT COUNT(*) FROM content_fts").fetchone()[0] == 4
+        assert index.connection.execute("SELECT COUNT(*) FROM rag_documents").fetchone()[0] == 0
 
 
 def test_every_worker_is_a_separate_ultra_priority_process(library: Path, tmp_path: Path) -> None:

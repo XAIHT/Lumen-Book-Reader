@@ -15,7 +15,85 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-No changes yet.
+---
+
+## [1.7.0] — 2026-09-02
+
+Minor release: a complete external MCP for the user's Lumen library, with the
+reader's original high-throughput sweep restored as an independent fast path.
+
+### Added
+
+- Implemented the headless Lumen MCP sidecar designed in
+  `LumenBookReader-MCPDesign.md`: seven default read-only tools, bounded
+  `lumen://` resources, optional research prompts, MCP STDIO by default, and
+  loopback-only Streamable HTTP.
+- Added an additive, revisioned passage schema with deterministic Unicode-safe
+  chunks, EPUB-spine/PDF-page complete extraction, staging revisions, atomic
+  activation, exact locators, content hashes, corpus revisions, and signed
+  citation/cursor tokens.
+- The existing Turbo Sweep remains the fast catalog/content-FTS path.
+  `lumen-mcp index build` independently upgrades selected books to streamed
+  `complete`, `no_text`, or `locked` passage coverage without invalidating a
+  prior active revision on failure.
+- Added safe catalog globbing, lexical passage search, exact literal/phrase and
+  time-bounded regex verification, related-content retrieval with enforced
+  exact-author/subject-overlap filters and exact passage-only adjacency,
+  bounded read-only SQLite connection pooling, query explanation, and bounded
+  offline Princeton WordNet 3.0 semantic query expansion.
+- Added `doctor`, `status`, passage-index, and strict portable-config CLI
+  commands plus deterministic `LumenBookReader.json` emission/validation,
+  duplicate-key rejection, exact field/argument policy, atomic replacement,
+  and guarded backup behavior.
+- Release builds now freeze a separate console `LumenMCP.exe` so MCP STDIO has
+  clean protocol pipes and the Qt reader's windowed startup/import graph stays
+  independent.
+- Added 15 tests covering chunk bounds, bootstrap and complete passage
+  activation, glob/grep/search/citation resolution, root authorization, server
+  discovery/annotations/resources, real metadata relationship filters,
+  ambiguous relationship-seed refusal, strict config lifecycle, and a real MCP
+  subprocess initialize/status/structured-error exchange. The collection is
+  now 388 tests.
+
+### Compatibility and fallback behavior
+
+- Existing pre-passage Lumen databases remain readable. MCP immediately falls
+  back to the current capped book-head FTS index and labels precision/coverage.
+  Only the explicit resumable builder creates passage rows and exact locators;
+  an ordinary reader sweep never pays that cost.
+- The sidecar supports the current MCP Python SDK v2 surface and the late v1
+  `FastMCP` surface already present in development environments. Public tool
+  names and annotations are identical across both.
+- The frozen sidecar collects the `mcp_types` distribution that SDK v2 split the
+  protocol types out into, and the MCP tests read protocol fields through the
+  same compatibility boundary as the server rather than naming v1's camelCase
+  spelling directly, so the suite passes on either generation.
+- An isolated final-source PyInstaller proof produced a 54,064,607-byte
+  one-file console sidecar using the exact release exclusion policy. That
+  frozen executable passed an MCP SDK 2.1.1 STDIO handshake, listed all seven
+  tools, returned structured ready status, enforced author and partial-subject
+  relationships, rejected ambiguous adjacency with a structured error, and
+  emitted/revalidated a canonical installed-mode launch descriptor.
+- Semantic search uses the bundled Princeton WordNet 3.0 corpus for bounded,
+  deterministic query expansion before FTS5 ranking; it makes no network model
+  call. CPU exact verification remains active, and status exposes detected
+  hardware, registered backend, actual use, and fallback reason separately.
+
+### Fixed
+
+- Restored normal library-sweep throughput by removing passage chunking,
+  passage FTS insertion, and per-book corpus revision aggregation from the
+  sweep's single SQLite writer. This removes the result-queue backpressure that
+  left every extractor showing `publishing to the index` while progress decayed
+  to `0.0 books/s`.
+- MCP passage readiness now requires active searchable passage content, not
+  merely the presence of additive `rag_*` tables. Search, exact grep, and
+  author/subject related-content operations use the legacy full-text catalog
+  immediately and report truthful book-level precision until the separate
+  passage build runs.
+- Added release regressions proving that ordinary sweeps create legacy
+  `content_fts` rows but zero `rag_documents`; the complete collection passes
+  **388 tests**.
 
 ---
 

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "lumen-book-reader": {
+      "command": "${LUMEN_MCP_EXECUTABLE}",
+      "args": [
+        "serve",
+        "--stdio"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

@@ -25,9 +25,12 @@ What this script does
      ``lumen_reader/launcher.py``.  ONEDIR IS MANDATORY: Lumen renders pages in
      QtWebEngine, whose helper process ``QtWebEngineProcess.exe`` cannot be
      re-launched out of a ``--onefile`` temp extraction reliably.
-  3. Stage the payload - the frozen tree plus the PowerShell registrars, the
+  3. Freeze the headless MCP sidecar as a separate console ``LumenMCP.exe``.
+     It is deliberately one-file so it cannot collide with the GUI's ONEDIR
+     ``_internal`` tree and so STDIO remains a real protocol pipe.
+  4. Stage the payload - the frozen tree plus the MCP sidecar, PowerShell registrars, the
      icon, the licence and the shared preserve list - into ``dist/payload/``.
-  4. Zip that staging tree into ``pkg.zip`` at the repo root, preserving empty
+  5. Zip that staging tree into ``pkg.zip`` at the repo root, preserving empty
      directories, then delete ``build/`` and ``dist/`` so the next stage starts
      from a clean slate.
 
@@ -38,6 +41,7 @@ the installed directory, one-for-one - no nesting, no surprises.
 from __future__ import annotations
 
 import os
+import importlib.metadata
 import shutil
 import subprocess
 import sys
@@ -75,6 +79,8 @@ PKG_ZIP = ROOT / "pkg.zip"
 
 APP_NAME = "Lumen"                       # -> Lumen.exe
 ENTRY_POINT = ROOT / "lumen_main.py"   # NOT launcher.py - see its docstring
+MCP_NAME = "LumenMCP"                  # -> LumenMCP.exe, console/STDIO sidecar
+MCP_ENTRY_POINT = ROOT / "lumen_mcp.py"
 ICON_SRC = ROOT / "lumen_reader" / "assets" / "lumen.ico"
 
 # Files copied into the payload root, beside Lumen.exe. These are exactly the
@@ -146,6 +152,8 @@ def assert_dependencies() -> None:
         "bs4": "beautifulsoup4",
         "nltk": "nltk",
         "fitz": "PyMuPDF",
+        "mcp": "mcp",
+        "regex": "regex",
     }
     missing = []
     for module, package in required.items():
@@ -164,7 +172,15 @@ def assert_dependencies() -> None:
             + f"\nInstall them into THIS interpreter:\n"
             f'    "{sys.executable}" -m pip install -r requirements.txt'
         )
-
+    try:
+        mcp_major = int(importlib.metadata.version("mcp").split(".", 1)[0])
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        mcp_major = 0
+    if mcp_major != 2:
+        sys.exit(
+            "\nERROR: release packaging requires the pinned MCP Python SDK 2.x.\n"
+            f'Install it into THIS interpreter:\n    "{sys.executable}" -m pip install -r requirements.txt'
+        )
 
 def stage_payload(version: str) -> Path:
     """Copy the frozen tree plus the support files into ``dist/payload``."""
@@ -184,6 +200,12 @@ def stage_payload(version: str) -> Path:
         else:
             shutil.copy2(entry, dst)
     print(f"  copied the frozen {APP_NAME} tree")
+
+    mcp_executable = DIST_DIR / f"{MCP_NAME}.exe"
+    if not mcp_executable.is_file():
+        sys.exit(f"ERROR: PyInstaller produced no {mcp_executable}")
+    shutil.copy2(mcp_executable, PAYLOAD_DIR / mcp_executable.name)
+    print(f"  copied the headless {MCP_NAME}.exe sidecar")
 
     # The standalone .ico: shortcuts, ProgID DefaultIcon and the ARP entry all
     # point at it, and a real .ico renders sharper at 16px than an extracted
@@ -257,6 +279,7 @@ def verify_pkg_zip(zip_path: Path) -> None:
     step("Verifying the package payload")
     required = {
         f"{APP_NAME}.exe",
+        f"{MCP_NAME}.exe",
         "lumen.ico",
         "CreateShortcut.ps1",
         "RemoveShortcut.ps1",
@@ -298,10 +321,13 @@ def main() -> int:
     print(f"repo        : {ROOT}")
     print(f"python      : {sys.executable}")
     print(f"entry point : {ENTRY_POINT.relative_to(ROOT)}")
+    print(f"MCP entry   : {MCP_ENTRY_POINT.relative_to(ROOT)}")
     warn_if_tag_behind(version)
 
     if not ENTRY_POINT.is_file():
         sys.exit(f"ERROR: entry point not found: {ENTRY_POINT}")
+    if not MCP_ENTRY_POINT.is_file():
+        sys.exit(f"ERROR: MCP entry point not found: {MCP_ENTRY_POINT}")
 
     step("Checking there is room to build")
     # Measured from a real run: ~600 MB frozen tree, the same again staged into
@@ -318,12 +344,17 @@ def main() -> int:
 
     step("Cleaning previous build artefacts")
     clean_directory(BUILD_DIR / APP_NAME)
+    clean_directory(BUILD_DIR / MCP_NAME)
     clean_directory(DIST_DIR / APP_NAME)
     clean_directory(PAYLOAD_DIR)
     spec = ROOT / f"{APP_NAME}.spec"
     if spec.exists():
         spec.unlink()
         print(f"Removed: {spec}")
+    mcp_spec = ROOT / f"{MCP_NAME}.spec"
+    if mcp_spec.exists():
+        mcp_spec.unlink()
+        print(f"Removed: {mcp_spec}")
 
     command = [
         sys.executable, "-m", "PyInstaller",
@@ -364,6 +395,42 @@ def main() -> int:
         sys.exit(f"ERROR: expected output not found: {exe}")
     print(f"\n{APP_NAME}.exe built: {exe} ({exe.stat().st_size / (1024 * 1024):.1f} MB)")
 
+    step("Running PyInstaller for the MCP sidecar")
+    mcp_command = [
+        sys.executable, "-m", "PyInstaller",
+        "--onefile",
+        "--console",
+        "--noconfirm",
+        "--noupx",
+        "--name", MCP_NAME,
+        f"--version-file={version_file}",
+        "--paths", str(ROOT),
+        "--collect-submodules", "mcp",
+        # SDK v2 moved the protocol types out of mcp into their own top-level
+        # distribution, so collecting mcp alone no longer reaches them.
+        "--collect-submodules", "mcp_types",
+        "--collect-submodules", "nltk.corpus",
+        "--collect-data", "nltk",
+        "--collect-data", "lumen_reader",
+        "--hidden-import", "regex",
+        "--hidden-import", "bs4",
+        "--hidden-import", "fitz",
+        "--hidden-import", "nltk.corpus.reader.wordnet",
+    ]
+    for module in [*EXCLUDES, "PySide6"]:
+        mcp_command += ["--exclude-module", module]
+    mcp_command.append(str(MCP_ENTRY_POINT))
+    if ICON_SRC.is_file():
+        mcp_command.insert(-1, f"--icon={ICON_SRC}")
+    print("$ " + " ".join(mcp_command))
+    mcp_result = subprocess.run(mcp_command, cwd=str(ROOT), env=utf8_env())
+    if mcp_result.returncode != 0:
+        sys.exit(f"\nPyInstaller for {MCP_NAME} FAILED")
+    mcp_exe = DIST_DIR / f"{MCP_NAME}.exe"
+    if not mcp_exe.is_file():
+        sys.exit(f"ERROR: expected output not found: {mcp_exe}")
+    print(f"{MCP_NAME}.exe built: {mcp_exe} ({mcp_exe.stat().st_size / (1024 * 1024):.1f} MB)")
+
     payload = stage_payload(version)
     zip_path = make_pkg_zip(payload)
     verify_pkg_zip(zip_path)
@@ -377,6 +444,9 @@ def main() -> int:
     if spec.exists():
         spec.unlink()
         print(f"Removed: {spec.name}")
+    if mcp_spec.exists():
+        mcp_spec.unlink()
+        print(f"Removed: {mcp_spec.name}")
 
     banner(f"BUILD COMPLETE  ·  v{version}  ·  {time.time() - start:.0f}s")
     print(f"  package : {zip_path}  ({zip_path.stat().st_size / (1024 * 1024):.1f} MB)")

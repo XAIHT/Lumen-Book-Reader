@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lumen Book Reader portable MCP launch descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mcpServers"],
+  "properties": {
+    "mcpServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lumen-book-reader"],
+      "properties": {
+        "lumen-book-reader": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command", "args", "env"],
+          "properties": {
+            "command": {"type": "string", "minLength": 1},
+            "args": {
+              "oneOf": [
+                {"const": ["serve", "--stdio"]},
+                {"const": ["-m", "lumen_reader.mcp_server", "serve", "--stdio"]}
+              ]
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["PYTHONUNBUFFERED", "PYTHONIOENCODING"],
+              "properties": {
+                "PYTHONUNBUFFERED": {"const": "1"},
+                "PYTHONIOENCODING": {"const": "utf-8"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumen-epub-reader"
-version = "1.5.4"
+version = "1.7.0"
 description = "A polished, secure desktop EPUB and PDF reader built with Python and Qt."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,8 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "nltk>=3.9,<4",
   "PyMuPDF>=1.26,<2",
+  "mcp>=2,<3",
+  "regex>=2024.11",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,9 @@ test = ["pytest>=8,<10", "pypdf>=6,<7", "reportlab>=4,<5"]
 
 [project.gui-scripts]
 lumen-reader = "lumen_reader.app:main"
+
+[project.scripts]
+lumen-mcp = "lumen_reader.mcp_server.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["lumen_reader*"]
