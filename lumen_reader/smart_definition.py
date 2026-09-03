@@ -18,6 +18,10 @@ DEFAULT_GOOGLER_PATH = Path(r"C:\Tlamatini\agents\googler")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "glm-5.2:cloud"
 
+_PYTHON_EXECUTABLE_PATTERN = re.compile(
+    r"python(?:\d+(?:\.\d+)*)?w?(?:\.exe)?", re.IGNORECASE
+)
+
 _YOUNG_ANIMALS = {
     "kitten": "cat",
     "puppy": "dog",
@@ -210,6 +214,56 @@ def parse_ollama_chat_response(
     ]
 
 
+def resolve_tlamatini_python(agent_directory: str | Path) -> Path | None:
+    """Find a real Python runtime for the isolated Tlamatini helper.
+
+    ``sys.executable`` is Python while Lumen runs from source, but it is
+    ``Lumen.exe`` in a PyInstaller build.  Reusing it there relaunches the
+    reader instead of executing the helper bridge.  Frozen builds therefore
+    use only a Python runtime installed beside the configured Tlamatini agent
+    and fail closed when one is unavailable.
+    """
+    agent_dir = Path(agent_directory).expanduser().resolve()
+    current_executable = Path(sys.executable).expanduser().resolve()
+    candidates: list[Path] = []
+
+    if not getattr(sys, "frozen", False):
+        candidates.append(current_executable)
+
+    roots = [agent_dir]
+    if agent_dir.parent.name.casefold() == "agents":
+        roots.append(agent_dir.parent.parent)
+    else:
+        roots.append(agent_dir.parent)
+
+    for root in roots:
+        candidates.extend(
+            (
+                root / "python" / "python.exe",
+                root / ".venv" / "Scripts" / "python.exe",
+                root / "venv" / "Scripts" / "python.exe",
+                root / ".venv" / "bin" / "python",
+                root / "venv" / "bin" / "python",
+            )
+        )
+
+    seen: set[Path] = set()
+    frozen = bool(getattr(sys, "frozen", False))
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file() or not _PYTHON_EXECUTABLE_PATTERN.fullmatch(
+            resolved.name
+        ):
+            continue
+        if frozen and resolved == current_executable:
+            continue
+        return resolved
+    return None
+
+
 def run_tlamatini_googler(
     term: str, agent_directory: str | Path, timeout_seconds: float = 12.0
 ) -> list[DictionaryEntry]:
@@ -220,9 +274,16 @@ def run_tlamatini_googler(
     """
     agent_dir = Path(agent_directory).expanduser().resolve()
     script_path = agent_dir / "googler.py"
-    if not script_path.is_file() or timeout_seconds <= 1:
+    python_executable = resolve_tlamatini_python(agent_dir)
+    clean_term = " ".join(str(term or "").split())[:240]
+    if (
+        not script_path.is_file()
+        or python_executable is None
+        or not clean_term
+        or timeout_seconds <= 1
+    ):
         return []
-    query = f'"{term}" meaning OR definition OR slang'
+    query = f'"{clean_term}" meaning OR definition OR slang'
     bridge = r'''
 import importlib.util, json, sys
 from urllib.parse import quote_plus
@@ -285,8 +346,9 @@ print("__LUMEN_GOOGLER_JSON__" + json.dumps(results, ensure_ascii=False))
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         completed = subprocess.run(
-            [sys.executable, "-c", bridge, str(script_path), query],
+            [str(python_executable), "-c", bridge, str(script_path), query],
             cwd=str(agent_dir),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -294,6 +356,7 @@ print("__LUMEN_GOOGLER_JSON__" + json.dumps(results, ensure_ascii=False))
             timeout=max(2.0, float(timeout_seconds)),
             creationflags=creationflags,
             check=False,
+            shell=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -305,7 +368,7 @@ print("__LUMEN_GOOGLER_JSON__" + json.dumps(results, ensure_ascii=False))
         results = json.loads(line[len(marker) :])
     except json.JSONDecodeError:
         return []
-    return parse_tlamatini_results(term, results)
+    return parse_tlamatini_results(clean_term, results)
 
 
 def parse_tlamatini_results(term: str, results: Any) -> list[DictionaryEntry]:

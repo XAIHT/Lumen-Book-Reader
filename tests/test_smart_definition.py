@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
+
+import lumen_reader.smart_definition as smart_definition
 
 from lumen_reader.smart_definition import (
     build_ollama_chat_payload,
@@ -8,6 +12,8 @@ from lumen_reader.smart_definition import (
     normalized_ollama_url,
     parse_ollama_chat_response,
     parse_tlamatini_results,
+    resolve_tlamatini_python,
+    run_tlamatini_googler,
 )
 
 
@@ -83,3 +89,79 @@ def test_ollama_url_normalization_accepts_host_or_api_url() -> None:
     assert normalized_ollama_url("http://localhost:11434/api/", "/chat") == (
         "http://localhost:11434/api/chat"
     )
+
+
+def _touch(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return path
+
+
+def test_frozen_reader_uses_tlamatini_python_never_lumen_exe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    agent_dir = tmp_path / "Tlamatini" / "agents" / "googler"
+    _touch(agent_dir / "googler.py")
+    bundled_python = _touch(tmp_path / "Tlamatini" / "python" / "python.exe")
+    lumen_executable = _touch(tmp_path / "Lumen.exe")
+    monkeypatch.setattr(smart_definition.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(smart_definition.sys, "executable", str(lumen_executable))
+
+    assert resolve_tlamatini_python(agent_dir) == bundled_python.resolve()
+
+
+def test_frozen_reader_fails_closed_without_a_tlamatini_python(
+    tmp_path: Path, monkeypatch
+) -> None:
+    agent_dir = tmp_path / "Tlamatini" / "agents" / "googler"
+    _touch(agent_dir / "googler.py")
+    lumen_executable = _touch(tmp_path / "Lumen.exe")
+    monkeypatch.setattr(smart_definition.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(smart_definition.sys, "executable", str(lumen_executable))
+
+    assert resolve_tlamatini_python(agent_dir) is None
+
+    def unexpected_launch(*args, **kwargs):
+        raise AssertionError("No process may be launched without a trusted Python runtime")
+
+    monkeypatch.setattr(smart_definition.subprocess, "run", unexpected_launch)
+    assert run_tlamatini_googler("selected text", agent_dir) == []
+
+
+def test_googler_launch_keeps_selected_text_out_of_code_and_shell(
+    tmp_path: Path, monkeypatch
+) -> None:
+    agent_dir = tmp_path / "Tlamatini" / "agents" / "googler"
+    script_path = _touch(agent_dir / "googler.py")
+    bundled_python = _touch(tmp_path / "Tlamatini" / "python" / "python.exe")
+    lumen_executable = _touch(tmp_path / "Lumen.exe")
+    monkeypatch.setattr(smart_definition.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(smart_definition.sys, "executable", str(lumen_executable))
+    captured: dict[str, object] = {}
+
+    def fake_run(arguments, **options):
+        captured["arguments"] = arguments
+        captured["options"] = options
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=(
+                '__LUMEN_GOOGLER_JSON__[{"title":"danger & calc definition",'
+                '"url":"https://example.test/danger"}]\n'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(smart_definition.subprocess, "run", fake_run)
+    entries = run_tlamatini_googler("  danger   &   calc  ", agent_dir)
+
+    arguments = captured["arguments"]
+    options = captured["options"]
+    assert arguments[0] == str(bundled_python.resolve())
+    assert arguments[0] != str(lumen_executable.resolve())
+    assert arguments[1] == "-c"
+    assert arguments[3] == str(script_path.resolve())
+    assert arguments[4] == '"danger & calc" meaning OR definition OR slang'
+    assert options["shell"] is False
+    assert options["stdin"] is subprocess.DEVNULL
+    assert len(entries) == 1

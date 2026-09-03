@@ -15,6 +15,14 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the optional Tlamatini Googler definition fallback relaunching
+  `Lumen.exe` in frozen Windows builds. The helper now resolves and validates
+  Tlamatini's adjacent Python runtime, never reuses the frozen application's
+  executable, keeps selected text in a separate non-shell argument, and fails
+  closed without launching a process when no trusted helper runtime exists.
+
 ---
 
 ## [1.7.0] — 2026-09-02
