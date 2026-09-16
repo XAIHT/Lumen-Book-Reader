@@ -46,7 +46,8 @@ import sys
 import time
 from pathlib import Path
 
-from build_support import banner, sha256, step, utf8_env
+from build_support import banner, sha256, step
+from release_environment import prepare_release_python, release_env
 from versioning import (
     ABOUT_URL,
     AUTHOR,
@@ -128,7 +129,7 @@ def run_stage(label: str, script: Path, version: str, python: str) -> None:
     print(f"$ {' '.join(cmd)}", flush=True)
     # LUMEN_VERSION is already exported by build.py's emit_build_artifacts, but
     # setting it here means every stage agrees even if a stage is skipped.
-    env = utf8_env()
+    env = release_env()
     env["LUMEN_VERSION"] = version
     if subprocess.run(cmd, cwd=str(ROOT), env=env).returncode != 0:
         sys.exit(f"{script.name} FAILED - no release produced.")
@@ -136,13 +137,7 @@ def run_stage(label: str, script: Path, version: str, python: str) -> None:
 
 def newest_release_dir(version: str) -> Path | None:
     expected = DIST / f"Lumen_Release_v{safe_version_for_path(version)}"
-    if expected.is_dir():
-        return expected
-    candidates = sorted(
-        (p for p in DIST.glob("Lumen_Release_v*") if p.is_dir()),
-        key=lambda p: p.stat().st_mtime, reverse=True,
-    )
-    return candidates[0] if candidates else None
+    return expected if expected.is_dir() else None
 
 
 # ── Provenance ─────────────────────────────────────────────────────────────
@@ -169,7 +164,7 @@ def write_checksums(release_dir: Path) -> dict[str, str]:
 
 
 def write_manifest(release_dir: Path, version: str, digests: dict[str, str],
-                   started: float) -> Path:
+                   started: float, python: str = sys.executable) -> Path:
     """Machine-readable provenance for the release.
 
     Answers, months later and without guessing: which commit built this, on
@@ -178,6 +173,13 @@ def write_manifest(release_dir: Path, version: str, digests: dict[str, str],
     step("Writing the release manifest")
     parsed = parse_semver(version.split("+")[0]) or {}
     total = sum(p.stat().st_size for p in release_dir.rglob("*") if p.is_file())
+    runtime = subprocess.run(
+        [python, "-c", "import importlib.metadata as m,json,platform; "
+         "print(json.dumps({'python':platform.python_version(), 'packages':"
+         "{n:m.version(n) for n in ('mcp','mcp-types','PyInstaller','PySide6')}}))"],
+        cwd=ROOT, env=release_env(), capture_output=True, text=True, check=True,
+    )
+    runtime_info = json.loads(runtime.stdout)
     manifest = {
         "product": PRODUCT_NAME,
         "publisher": COMPANY_NAME,
@@ -191,12 +193,15 @@ def write_manifest(release_dir: Path, version: str, digests: dict[str, str],
             "prerelease": parsed.get("prerelease", ""),
         },
         "commit": git_commit(),
+        "working_tree_dirty": working_tree_dirty(),
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "build_seconds": round(time.time() - started, 1),
         "build_host": {
             "os": f"{platform.system()} {platform.release()}",
             "machine": platform.machine(),
-            "python": platform.python_version(),
+            "python": runtime_info["python"],
+            "python_executable": python,
+            "packages": runtime_info["packages"],
         },
         "registers_file_types": [".epub", ".pdf"],
         "registry_scope": "HKEY_CURRENT_USER (per-user, no administrator rights)",
@@ -242,8 +247,10 @@ def main(argv=None) -> int:
                     help="with --bump, do not create the git tag (build only)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="allow tagging with uncommitted changes in the tree")
-    ap.add_argument("--python", default=sys.executable,
-                    help="interpreter that drives the sub-builds")
+    ap.add_argument("--python", default=None,
+                    help="explicit preconfigured interpreter (default: managed .venv-release)")
+    ap.add_argument("--prepare-only", action="store_true",
+                    help="prepare/check build dependencies without freezing or tagging")
     ap.add_argument("--skip-app", action="store_true",
                     help="reuse the existing pkg.zip instead of rebuilding it")
     ap.add_argument("--skip-uninstaller", action="store_true",
@@ -265,6 +272,15 @@ def main(argv=None) -> int:
 
     if parse_semver(version.split("+")[0]) is None:
         sys.exit(f"REFUSING: {version!r} is not a valid SemVer version.")
+
+    args.python = prepare_release_python(ROOT, args.python)
+    if args.prepare_only:
+        # Import through this script's directory, with foreign PYTHONPATH removed.
+        result = subprocess.run(
+            [args.python, "-c", "from build import assert_dependencies; assert_dependencies()"],
+            cwd=ROOT, env=release_env(),
+        )
+        return result.returncode
 
     banner(f"{PRODUCT_NAME.upper()} RELEASE  ·  v{version}")
     print(f"repo        : {ROOT}")
@@ -308,7 +324,7 @@ def main(argv=None) -> int:
     # ── Provenance and packaging ────────────────────────────────────────
     banner("PROVENANCE")
     digests = write_checksums(release_dir)
-    write_manifest(release_dir, version, digests, started)
+    write_manifest(release_dir, version, digests, started, args.python)
 
     archive = None
     if not args.no_archive:

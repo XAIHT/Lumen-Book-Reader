@@ -294,6 +294,12 @@ That single command freezes the app, builds both wizards, assembles
 `dist/Lumen_Release_v<version>/` and zips it with SHA-256 checksums and a
 release manifest. The user unpacks the zip and double-clicks **Installer.exe**.
 
+The release command automatically provisions `.venv-release` with the tested
+versions in `requirements-release.txt`, including MCP SDK/types 2.2.0. It checks
+and reconciles those dependencies on reuse, independently of other applications'
+shared Python packages. Use `python build_complete_release.py --prepare-only`
+to verify dependencies without freezing. See [RELEASING.md](RELEASING.md).
+
 The wizard asks four things and nothing else: where Lumen goes, where the
 library lives, **which file types to register** — `.epub` and `.pdf` as separate
 tick-boxes, with *"make Lumen the default"* as a separate, unticked switch — and

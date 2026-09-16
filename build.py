@@ -31,8 +31,8 @@ What this script does
   4. Stage the payload - the frozen tree plus the MCP sidecar, PowerShell registrars, the
      icon, the licence and the shared preserve list - into ``dist/payload/``.
   5. Zip that staging tree into ``pkg.zip`` at the repo root, preserving empty
-     directories, then delete ``build/`` and ``dist/`` so the next stage starts
-     from a clean slate.
+     directories, then delete only this stage's intermediates. Previous
+     release folders, archives, and other build scripts remain intact.
 
 ``pkg.zip`` is the single artefact the installer extracts.  Its contents ARE
 the installed directory, one-for-one - no nesting, no surprises.
@@ -169,18 +169,30 @@ def assert_dependencies() -> None:
     if missing:
         sys.exit(
             "\nERROR: cannot freeze Lumen - missing: " + ", ".join(sorted(set(missing)))
-            + f"\nInstall them into THIS interpreter:\n"
-            f'    "{sys.executable}" -m pip install -r requirements.txt'
+            + "\nRun python build_complete_release.py to prepare isolated release dependencies."
         )
     try:
-        mcp_major = int(importlib.metadata.version("mcp").split(".", 1)[0])
-    except (importlib.metadata.PackageNotFoundError, ValueError):
-        mcp_major = 0
-    if mcp_major != 2:
+        sdk_version = importlib.metadata.version("mcp")
+        types_version = importlib.metadata.version("mcp-types")
+    except importlib.metadata.PackageNotFoundError:
+        sdk_version, types_version = "missing", "missing"
+    if sdk_version.split(".", 1)[0] != "2" or types_version.split(".", 1)[0] != "2":
         sys.exit(
-            "\nERROR: release packaging requires the pinned MCP Python SDK 2.x.\n"
-            f'Install it into THIS interpreter:\n    "{sys.executable}" -m pip install -r requirements.txt'
+            f"\nERROR: release packaging needs MCP SDK 2.x and protocol types 2.x; "
+            f"found mcp={sdk_version}, mcp-types={types_version} in {sys.executable}.\n"
+            "Run python build_complete_release.py to prepare isolated release dependencies."
         )
+    print(f"  [OK]   MCP SDK {sdk_version}, protocol types {types_version}")
+
+
+def clean_app_intermediates() -> None:
+    """Remove this stage's owned scratch paths, never the build/dist roots."""
+    for path in (BUILD_DIR / APP_NAME, BUILD_DIR / MCP_NAME,
+                 DIST_DIR / APP_NAME, PAYLOAD_DIR):
+        if path.resolve().parent not in (BUILD_DIR.resolve(), DIST_DIR.resolve()):
+            raise RuntimeError(f"Build cleanup target escapes its scratch directory: {path}")
+        clean_directory(path)
+    (DIST_DIR / f"{MCP_NAME}.exe").unlink(missing_ok=True)
 
 def stage_payload(version: str) -> Path:
     """Copy the frozen tree plus the support files into ``dist/payload``."""
@@ -405,7 +417,9 @@ def main() -> int:
         "--name", MCP_NAME,
         f"--version-file={version_file}",
         "--paths", str(ROOT),
-        "--collect-submodules", "mcp",
+        # The hook filters mcp.cli before traversal: that optional developer
+        # command exits at import time without its typer extra on a clean host.
+        "--additional-hooks-dir", str(ROOT / "packaging_hooks"),
         # SDK v2 moved the protocol types out of mcp into their own top-level
         # distribution, so collecting mcp alone no longer reaches them.
         "--collect-submodules", "mcp_types",
@@ -436,8 +450,7 @@ def main() -> int:
     verify_pkg_zip(zip_path)
 
     step("Cleaning up intermediate artefacts")
-    clean_directory(BUILD_DIR)
-    clean_directory(DIST_DIR)
+    clean_app_intermediates()
     if version_file.exists():
         version_file.unlink()
         print(f"Removed: {version_file.name}")

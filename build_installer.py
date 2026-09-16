@@ -235,7 +235,13 @@ def main() -> int:
     safe_version = safe_version_for_path(version)
     release_dir = ROOT / "dist" / f"Lumen_Release_v{safe_version}"
     if release_dir.exists():
-        clean_directory(release_dir)
+        previous = release_dir.with_name(
+            f"{release_dir.name}_previous_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
+        )
+        if release_dir.resolve().parent != (ROOT / "dist").resolve():
+            sys.exit(f"ERROR: release folder resolves outside dist: {release_dir}")
+        rename_with_retry(release_dir, previous)
+        print(f"Preserved previous release: {previous.name}")
     rename_with_retry(installer_dir, release_dir)
     print(f"Renamed {installer_dir.name}/ -> {release_dir.name}/")
 

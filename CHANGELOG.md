@@ -26,6 +26,20 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- Fixed repeated release failures when another application installs MCP 1.x
+  into the shared Python environment. The normal complete-release command now
+  provisions and checks a dedicated `.venv-release`, with pinned MCP SDK/types
+  2.2.0 and tested build/runtime inputs. Foreign Python and pip target settings
+  are excluded from release subprocesses. `--prepare-only` checks prerequisites
+  without freezing; explicit `--python` remains an opt-out from provisioning.
+- Fixed clean-environment MCP freezing importing the optional SDK developer
+  CLI and exiting when `typer` is absent. The packaging hook filters that CLI
+  before traversal while collecting the runtime and transports.
+- Build cleanup now removes only owned intermediates. Earlier release archives
+  and build wrappers survive, and an existing same-version release folder is
+  preserved under a timestamped name before replacement. Missing release output
+  can no longer be substituted with a different version's folder.
+
 - Fixed the optional Tlamatini Googler definition fallback relaunching
   `Lumen.exe` in frozen Windows builds. The helper now resolves and validates
   Tlamatini's adjacent Python runtime, never reuses the frozen application's

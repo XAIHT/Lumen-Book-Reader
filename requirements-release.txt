@@ -1,0 +1,11 @@
+# Tested release inputs. General development compatibility remains in requirements.txt.
+-r requirements.txt
+PySide6==6.11.1
+beautifulsoup4==4.15.0
+nltk==3.9.4
+PyMuPDF==1.26.5
+regex==2026.4.4
+mcp==2.2.0
+mcp-types==2.2.0
+PyInstaller==6.18.0
+pyinstaller-hooks-contrib==2026.4

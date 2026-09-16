@@ -5,6 +5,17 @@
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
 > Current implementation release: **v1.7.0** (2026-09-02)
+
+Build maintenance (2026-09-16): `build_complete_release.py` now uses
+`release_environment.py` to provision isolated `.venv-release` dependencies
+from `requirements-release.txt` on every invocation. MCP SDK and types are
+both pinned to 2.2.0. Shared MCP 1.x installations and the development `.venv`
+do not supply release packages. `--prepare-only` validates prerequisites;
+explicit `--python` selects an already prepared interpreter. Tests in
+`tests/test_release_environment.py` cover isolation, reconciliation, fail-before-
+freeze behavior, interpreter propagation, and preservation of prior artifacts.
+Build cleanup targets only owned intermediate directories; previous release
+archives and timestamped same-version folders remain available. See RELEASING.md.
 > Project author and publisher: **Angela López Mendoza / @angelahack1**
 
 This is the code-oriented memory of the project: what exists, when it arrived, how the major systems work, which details are minor but load-bearing, what degrades gracefully, and where comments or release prose differ from executable behavior. It is deliberately based on the repository and Git history, not on promotional inference.

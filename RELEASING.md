@@ -314,14 +314,38 @@ and the first sweep after an upgrade rebuilds what it needs.
 ## Requirements
 
 * Windows 10/11 x64
-* **System** Python 3.12 (`C:\Program Files\Python312\python.exe`) with
+* Python 3.12 (`C:\Program Files\Python312\python.exe`) with
   `tkinter` — the wizards are Tkinter GUIs
-* `pip install -r requirements.txt` into that same interpreter
-* PyInstaller (installed automatically if missing)
+* Network access for the first dependency installation (or a configured pip cache/index)
 
-`build.py` probes every runtime dependency by name *before* PyInstaller starts,
-so a missing `PyMuPDF` fails in two seconds with the exact `pip` line to run,
-rather than three minutes into an analysis pass.
+Run `python .\build_complete_release.py`. It automatically creates the dedicated
+`.venv-release` directory with system/user site packages disabled, installs
+`requirements-release.txt`, and runs `pip check` before freezing. This file pins
+MCP and its protocol types to **2.2.0**, plus the tested direct runtime and
+freezer versions; transitive dependencies remain governed by those packages.
+`packaging_hooks/hook-mcp.py` collects SDK runtime modules while excluding the
+optional SDK developer CLI before import. Lumen supplies its own CLI, so a
+clean release environment does not need `mcp[cli]` or `typer` to freeze.
+Every invocation reconciles the pins, repairing an accidental MCP downgrade
+inside this environment. Already satisfied requirements are reused.
+
+The shared Python installation can keep MCP 1.x for other applications.
+Inherited `PYTHONPATH`, `PYTHONHOME`, user site packages, and pip install-target
+overrides do not enter the release subprocesses. The existing development
+`.venv` is separate and is not used for release packaging.
+
+`python .\build_complete_release.py --prepare-only` prepares dependencies and
+runs the import/version preflight without freezing or tagging. An explicit
+`--python C:\path\to\python.exe` uses that preconfigured interpreter without
+installing into it; its owner must supply compatible dependencies. To run an
+individual stage using the managed environment, use
+`.\.venv-release\Scripts\python.exe .\build.py` (or either wizard build script).
+
+`build.py` reports the actual MCP SDK/types versions before freezing. It removes
+only its own intermediate trees, preserving other content in `build/` and
+`dist/`. Rebuilding the same version moves the previous release folder to a
+timestamped `_previous_...` sibling; existing distribution archives remain.
+These saved releases consume disk space until you choose to remove them.
 
 The library engine adds no third-party dependency. `turbo_scan`, `accel`,
 `scan_monitor` and `settings_dialog` use only the standard library, `ctypes`
@@ -334,6 +358,20 @@ host with no GPU stack needs nothing extra.
 
 ## Verifying a release
 
+Use the actual sidecar extracted from the release's `pkg.zip` for the protocol
+smoke check (choose a topic that exists in your configured library):
+
+```powershell
+.\.venv-release\Scripts\python.exe .\smoke_mcp.py --executable C:\path\to\LumenMCP.exe --query "radio frequency"
+```
+
+This connects over STDIO, initializes the server, discovers its tools/resources/
+prompts, and calls all seven read tools against the existing library. It requires
+matching search/grep results and checks the returned book identity. To run the
+automated missing-index/error regression against that executable too, set
+`LUMEN_TEST_MCP_EXE` to its absolute path and run `tests/test_mcp_stdio.py` with
+pytest in the release environment. These checks do not install or open the GUI.
+
 ```powershell
 cd Lumen_Release_v<version>
 Get-FileHash Installer.exe -Algorithm SHA256      # compare against SHA256SUMS.txt
@@ -342,7 +380,8 @@ Get-Content RELEASE_MANIFEST.json | ConvertFrom-Json
 
 `RELEASE_MANIFEST.json` records the version, the commit, the build host, the
 total size, a digest for every file, and the file types the installer will
-offer to register.
+offer to register. It also records whether the working tree has uncommitted
+changes and the actual sub-build interpreter and MCP/Qt/freezer versions.
 
 ---
 

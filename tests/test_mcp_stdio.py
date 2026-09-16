@@ -18,8 +18,9 @@ def test_real_stdio_initialize_discovery_and_status(tmp_path: Path) -> None:
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUNBUFFERED"] = "1"
         parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "lumen_reader.mcp_server", "serve", "--stdio"],
+            command=os.environ.get("LUMEN_TEST_MCP_EXE") or sys.executable,
+            args=(["serve", "--stdio"] if os.environ.get("LUMEN_TEST_MCP_EXE") else
+                  ["-m", "lumen_reader.mcp_server", "serve", "--stdio"]),
             cwd=Path(__file__).parents[1],
             env=environment,
         )
