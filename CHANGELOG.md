@@ -15,6 +15,15 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Ollama is now an independent definition source rather than a miss-only
+  fallback. When enabled with a configured model, its bounded contextual
+  request starts at the beginning of every lookup in parallel with the cache,
+  WordNet, and conventional web dictionaries. Deterministic hits remain visible
+  immediately but no longer suppress or cancel the LLM attempt. A live reader
+  regression pins this orchestration; the suite now contains 392 tests.
+
 ### Fixed
 
 - Fixed the optional Tlamatini Googler definition fallback relaunching

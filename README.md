@@ -74,15 +74,15 @@ RSVP can be useful for fluent review, but speed and comprehension are not the sa
 
 ## ◇ Definitions that understand the page
 
-Double-click a word, or select a phrase and choose the definition prompt. Lumen runs an append-only, clearly labeled source ladder:
+Double-click a word, or select a phrase and choose the definition prompt. Lumen runs append-only, clearly labeled sources:
 
 1. bundled Princeton WordNet and the local cache;
 2. Wiktionary plus DictionaryAPI.dev, Wikipedia, or Datamuse when appropriate;
 3. transparent contextual morphology for coined or inflected expressions;
 4. optional Tlamatini Googler evidence;
-5. optional **Ollama contextual resolution**, only after conventional sources miss.
+5. optional **Ollama contextual resolution**, launched immediately and in parallel with the deterministic sources for every lookup.
 
-That last stage is why Ollama exists in Lumen: **not to chat, summarize the book, or replace a dictionary, but to resolve a difficult definition from the passage being read**. Lumen supplies the selected expression, a bounded surrounding passage, and the current book/section titles; validates the structured answer; and labels the model that produced it.
+Ollama is complementary rather than a fallback: deterministic cards can appear first, but they never suppress the model request when Ollama is enabled and a model is configured. Lumen keeps the definition session active for that independent attempt, then appends any valid model card beside the deterministic evidence. Ollama exists here **not to chat, summarize the book, or replace a dictionary, but to resolve a definition from the passage being read**. Lumen supplies the selected expression, a bounded surrounding passage, and the current book/section titles; validates the structured answer; and labels the model that produced it.
 
 ## ⟳ Your library, indexed and searchable
 
@@ -236,7 +236,7 @@ After the test response, exit the interactive prompt with <code>/bye</code>. <co
 ### 4. Connect Lumen
 
 1. Start Lumen and select **◇ Definer**.
-2. Enable **Ollama only after conventional sources miss**.
+2. Enable **Always request an Ollama contextual definition in parallel**.
 3. Keep **Ollama host** as <code>http://127.0.0.1:11434</code>.
 4. Select **Discover models**, then choose <code>glm-5.2:cloud</code>.
 5. Select **Save definition sources**.
@@ -244,7 +244,7 @@ After the test response, exit the interactive prompt with <code>/bye</code>. <co
 
 The model list is discovered live because Ollama may retire cloud tags over time. If the default is no longer offered, pull another model from the official [cloud model library](https://ollama.com/search?c=cloud), discover again, and select it.
 
-> **Privacy:** local dictionary and local-model requests stay on the machine. For a cloud model, the selected text, short surrounding context, book title, and section title are processed by Ollama Cloud. Ollama states that prompt/response content is not stored, logged, or used for training; review its current [cloud documentation](https://docs.ollama.com/cloud) and [privacy FAQ](https://docs.ollama.com/faq) before enabling the fallback.
+> **Privacy:** local dictionary and local-model requests stay on the machine. Once Ollama is enabled, every definition lookup is sent to the configured model in parallel with deterministic sources. For a cloud model, the selected text, short surrounding context, book title, and section title are processed by Ollama Cloud. Ollama states that prompt/response content is not stored, logged, or used for training; review its current [cloud documentation](https://docs.ollama.com/cloud) and [privacy FAQ](https://docs.ollama.com/faq) before enabling the provider.
 
 If discovery fails, verify that the Ollama tray application is running, <code>ollama ls</code> works, the host remains local, and no proxy or firewall is blocking port <code>11434</code>.
 
@@ -345,7 +345,7 @@ python -m pip install -e ".[test]"
 python -m pytest
 ~~~
 
-**388 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, EPUB-comment exclusion, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, search order, notes, persistence, wheel-safe settings, persistent original-file identity on shelf cards and in the reader header, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, Chromium-consumed click fallback, context-verified RSVP mapping across malformed EPUB display-only text, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, deterministic passage chunking/revision activation, exact glob/grep/search/citation retrieval, enforced related-author/subject metadata filters and adjacent-seed validation, legacy-index fallback before passage migration, strict portable MCP configuration, a real subprocess MCP STDIO handshake and structured error path, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
+**392 tests.** Coverage includes EPUB safety and rendering, PDF fidelity/rotation/passwords/selection, EPUB-comment exclusion, malformed-document Unicode, WordNet and online-response parsing, contextual Ollama payload validation, parallel Ollama invocation even when a deterministic definition already exists, search order, notes, persistence, wheel-safe settings, persistent original-file identity on shelf cards and in the reader header, responsive non-overlapping reader headers at scaled and narrow window widths, RSVP timing/countdown behavior, Chromium-consumed click fallback, context-verified RSVP mapping across malformed EPUB display-only text, the RSVP start/end markers driven against a real Chromium page, commit-accurate sweep progress, partial-sweep prune prevention and presentation, fatal-writer shutdown and recovery, the library index schema and its FTS rowid map, deterministic passage chunking/revision activation, exact glob/grep/search/citation retrieval, enforced related-author/subject metadata filters and adjacent-seed validation, legacy-index fallback before passage migration, strict portable MCP configuration, a real subprocess MCP STDIO handshake and structured-error path, the sweep monitor’s geometry under every fleet and window size, hardware/backend resolution and fallback, the machine profile that sizes the sweep to a four-core laptop with a mechanical disk (injected, not detected, so it is pinned on hardware the test runner does not have), and the release scheme’s install/uninstall symmetry.
 
 ## 📚 Documentation
 

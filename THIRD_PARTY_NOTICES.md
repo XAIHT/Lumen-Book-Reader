@@ -106,7 +106,7 @@ No GPU compute kernel, CUDA component, or DirectStorage binary is included in th
 
 ### Ollama and selected models
 
-Ollama is an optional, disabled-by-default contextual definition provider. Lumen contacts a user-configured Ollama host, discovers its available models, and sends a bounded lexicographer request only after conventional sources miss.
+Ollama is an optional, disabled-by-default contextual definition provider. Lumen contacts a user-configured Ollama host and discovers its available models. When the user enables it, Lumen sends one bounded lexicographer request from the beginning of every definition lookup, in parallel with deterministic sources; a successful dictionary result does not suppress that request.
 
 Ollama itself is not bundled. Ollama software and every selected model may have different licenses, acceptable-use conditions, privacy behavior, hosting arrangements, and data-retention policies. A cloud-tagged model may transmit the selected expression and captured passage beyond the local computer.
 

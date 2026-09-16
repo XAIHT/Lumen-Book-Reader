@@ -1,4 +1,4 @@
-"""Contextual and expert fallbacks for words absent from conventional dictionaries."""
+"""Complementary contextual and expert definition providers."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _YOUNG_ANIMALS = {
 
 
 def default_definition_fallbacks() -> dict[str, Any]:
-    """Return fresh persisted defaults for the optional deep-definition engines."""
+    """Return fresh persisted settings for optional definition engines."""
     return {
         "contextual_inference": True,
         "googler_enabled": DEFAULT_GOOGLER_PATH.joinpath("googler.py").is_file(),

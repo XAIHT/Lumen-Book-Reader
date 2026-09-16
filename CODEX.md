@@ -11,6 +11,22 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.6 Parallel contextual LLM definitions — 2026-09-16
+
+Ollama is now a complementary definition source, not the final rung of a
+miss-only ladder. If the user enables it and configures a model, Lumen starts
+the contextual request at the beginning of every word or phrase lookup, before
+dispatching WordNet and the conventional HTTP providers. Deterministic cards
+remain independently useful and can render first, but they cannot suppress,
+cancel, or short-circuit the LLM request.
+
+| File/system | Major implementation | Minor/load-bearing details and fallback |
+|---|---|---|
+| `lumen_reader/ui.py` | `_start_enabled_ollama_definition` registers Ollama as pending immediately after the definition card and cached evidence are initialized, then posts the bounded request before deterministic work begins. | Session identity, cancellation, 16-second request ceiling, 20-second total ceiling, validated JSON, and append-only cards are unchanged. A disabled provider or failed connection leaves deterministic definitions intact. |
+| Miss-only enrichment | Contextual morphology and Tlamatini Googler retain their 1.8-second miss-only gate. | Parallelizing Ollama does not impose Playwright/web-search cost on ordinary dictionary hits. |
+| `tests/test_definition_ui.py` | A live `ReaderWindow` begins with a successful cached WordNet card and asserts that Ollama still starts once, immediately, with the configured model while deterministic sources are also pending. | Pins the exact early-success bug and prevents a future `definition_count` shortcut from restoring miss-only LLM behavior. |
+| `README.md`, `THIRD_PARTY_NOTICES.md`, `CHANGELOG.md` | Setup, behavior, privacy, and release-facing descriptions now state that every lookup is sent to an enabled configured Ollama model. | Users can make an informed cloud-data decision; documentation no longer describes Ollama as a fallback. |
+
 ## 0.5 Lumen MCP implementation and v1.7.0 release — 2026-09-02
 
 The architecture in `LumenBookReader-MCPDesign.md` is now executable rather
@@ -236,7 +252,7 @@ ReaderWindow also coordinates:
 | PDF | PyMuPDF / `fitz` | Page rasterization, text and word extraction, links, TOC, password authentication. | Image-only pages remain viewable; optional Tesseract supplies text when available. |
 | Search | SQLite 3 FTS5 | Metadata/content indexes, BM25 ranking, snippets, paging, incremental maintenance. | Malformed FTS queries yield empty results instead of crashing. |
 | Concurrency | `threading`, `multiprocessing` spawn, bounded queues | Overlapped discovery, extraction, triage, writes, telemetry sampling. | A one-process scan stays inline in a thread and avoids process IPC. |
-| Definitions | NLTK WordNet, Qt network, optional subprocess/Ollama | Offline definitions first; online lexical/contextual enrichment. | Each source is time-bounded, independently retryable, and non-fatal. |
+| Definitions | NLTK WordNet, Qt network, optional subprocess/Ollama | Deterministic sources and an enabled Ollama contextual request begin independently and run in parallel; miss-only morphology/Googler enrichment remains bounded. | Each source is time-bounded, independently retryable, and non-fatal. |
 | Persistence | JSON with temp-file replace; SQLite WAL | Reader state, marks, dictionary cache, scan/search database. | Invalid JSON is ignored or defaulted; generated indexes are disposable. |
 | Packaging | PyInstaller onedir | Frozen Windows application and support files. | Unused scientific/Qt modules are explicitly excluded to constrain size. |
 | Installation | Tkinter + Win32 registry through Python/PowerShell | Per-user install, shortcuts, file associations, uninstall. | Python implementations cover PowerShell failure for removal paths. |
@@ -383,9 +399,9 @@ These lists are path-level history. The feature meaning of each interval is in �
 | Word online | DictionaryAPI + Wiktionary | QNetworkAccessManager, bounded session. | 404 completes the source; transient errors retry if time remains. |
 | Phrase online | Wikipedia + Datamuse | Wikipedia requires an exact usable page; Datamuse requires strict evidence. | Missing/disambiguation/no evidence is treated as a clean miss. |
 | Retry schedule | Qt timers | Approximately 650, 1,400, and 2,600 ms within a 20-second session. | Requests never retry indefinitely. |
-| Context escalation | Local coordinator | Begins after about 1.8 seconds when ordinary sources have not produced a usable result. | Ordinary source cards can still arrive independently. |
+| Miss-only enrichment | Local coordinator | Context morphology and Googler begin after about 1.8 seconds only when ordinary sources and the parallel model have not yet produced a usable result. | Ordinary and Ollama cards can still arrive independently. |
 | Googler | Optional `C:\Tlamatini\agents\googler\googler.py` | Auto-enabled only when present; isolated subprocess; ~12-second total budget. | Playwright Google falls back to DuckDuckGo; any failure returns no references. |
-| Ollama | Optional local HTTP | Disabled by default; `127.0.0.1:11434`, model `glm-5.2:cloud`; context ~1,600–1,800 chars. | Connection/model/JSON failure becomes a source miss, not a reader failure. |
+| Ollama | Optional local HTTP | Disabled by default; when enabled with a model, starts at the beginning of every lookup in parallel with cache, WordNet, and conventional HTTP providers; `127.0.0.1:11434`, model `glm-5.2:cloud`; context ~1,600–1,800 chars. | A deterministic hit never cancels or suppresses the model attempt; connection/model/JSON failure becomes an independent source miss, not a reader failure. |
 | Ollama payload | Lexicographer prompt | Temperature 0, non-streaming, `think=false`; local models request JSON format while cloud model omits it. | Parser still validates the response structure. |
 | Context result | Validated JSON | Definition ≤900 chars; up to 6 synonyms, each ≤80 chars. | Invalid or empty responses are discarded. |
 | Cache | Atomic local JSON | At most 2,500 entries; caches stable DictionaryAPI/Wiktionary/WordNet results. | Corrupt cache can be replaced; volatile contextual output is not treated as canonical. |
@@ -616,7 +632,7 @@ The table is intentionally granular. A fallback is not merely “catch exception
 | F029 | Datamuse evidence weak | Phrase lexical evidence. | Treat as miss. | Avoids presenting unrelated terms. |
 | F030 | Googler script absent | Optional reference search. | Feature remains disabled. | Core definitions unaffected. |
 | F031 | Google automation fails | Playwright Google. | DuckDuckGo attempt, then empty references. | No browser failure reaches reader. |
-| F032 | Ollama disabled/unreachable | Contextual definition. | Other sources; eventual explicit no-result. | No dependency on local model server. |
+| F032 | Ollama disabled/unreachable | Parallel contextual definition. | Deterministic sources and miss-only enrichment continue; eventual explicit no-result only if every source misses. | No dependency on the model server, and deterministic cards remain usable. |
 | F033 | Ollama response not valid JSON | Structured contextual result. | Discard response. | Does not display malformed generation. |
 | F034 | Lookup selection changes | Existing futures/network replies. | Cancel and session-gate late results. | Current selection stays authoritative. |
 | F035 | All definition sources miss | Definition cards. | Explicit comprehensive-search failure. | No infinite spinner. |
@@ -837,11 +853,11 @@ This ledger accounts for every file returned by `git ls-files` before `CODEX.md`
 | 51 | `lumen_reader/scan_monitor.py` | 658 lines | Live scan monitor, core tiles, sparkline, rates, pause/resume/cancel controls. | Reflow/scroll handles many workers; human-readable sizes/rates; dedicated tests. |
 | 52 | `lumen_reader/settings_dialog.py` | 1,093 lines | Six-tab library/sweep/accel/index/search/reading configuration UI. | Time-bounded probes and effective tuning explanations; no dedicated test file (D014). |
 | 53 | `lumen_reader/shelf.py` | 863 lines | Paged/virtual library model and shelf UI/delegate/search/filter/paging. | One-page memory model, debounce, keyboard routing, recent fallback; broad UI tests. |
-| 54 | `lumen_reader/smart_definition.py` | 391 lines | Context morphology, optional Googler/Ollama calls, prompt/result validation. | Googler exists-only auto enable; search engine fallback; Ollama disabled by default and strictly parsed; tests. |
+| 54 | `lumen_reader/smart_definition.py` | 454 lines | Context morphology, safe optional Googler execution, Ollama payload/result validation. | Googler uses a verified Python runtime and search-engine fallback; Ollama is disabled by default and strictly parsed. |
 | 55 | `lumen_reader/speed_reader.py` | 973 lines | RSVP segmentation, ORP, timing, controls, countdown, rest, exact source targeting. | Hard parameter bounds and boundary-safe chunks; speed/target tests. |
 | 56 | `lumen_reader/storage.py` | 116 lines | Atomic reader settings, recents, positions, and relocation. | Invalid JSON defaults; recent list bounded to 8; unique filename recovery; safety/storage tests. |
 | 57 | `lumen_reader/turbo_scan.py` | 1,661 lines | Full staged high-parallelism scan pipeline, tuning, priorities, IPC, batching, telemetry, cancellation. | Spawn/process caps, inline one-worker path, bounded heavy queues, graceful termination, skip-prune-on-cancel; extensive tests. |
-| 58 | `lumen_reader/ui.py` | 3,936 lines | Main reader window and integrated EPUB/PDF reading, search, definitions, marks, RSVP, scan/shelf orchestration. | Cancels asynchronous work on session/close; guarded links/JS; high integration concentration with multiple behavior tests. |
+| 58 | `lumen_reader/ui.py` | 4,185 lines | Main reader window and integrated EPUB/PDF reading, search, definitions, marks, RSVP, scan/shelf orchestration. | Enabled Ollama definitions launch in parallel with deterministic sources; cancellation/session guards reject stale work; guarded links/JS; high integration concentration with multiple behavior tests. |
 | 59 | `lumen_reader/version.py` | 389 lines | Runtime version resolution and generated `_version.py` support. | Generated → environment → Git → project fallback; v1.5 generated artifact exists in release, not tracked source. |
 
 ### 16.3 Test suite
@@ -867,7 +883,7 @@ Static function counts below count declared `test_*` functions; pytest parametri
 | 74 | `tests/test_safety_and_storage.py` | 4 tests | Storage atomicity/defaults and safety invariants. | Prioritizes user-state recovery. |
 | 75 | `tests/test_scan_monitor.py` | 7 tests | Monitor formatting, layout, and scan-state presentation. | Keeps high-core-count display manageable. |
 | 76 | `tests/test_shelf_ui.py` | 42 tests | Shelf model/delegate/search/filter/pagination/keyboard/UI behavior. | Broad coverage for the v1.4 library surface. |
-| 77 | `tests/test_smart_definition.py` | 5 tests | Contextual provider parsing/fallback. | Ensures optional model/search failures stay optional. |
+| 77 | `tests/test_smart_definition.py` | 8 tests | Contextual provider parsing plus frozen Googler-runtime safety. | Ensures optional model/search failures stay optional and a frozen reader cannot relaunch itself as Python. |
 | 78 | `tests/test_speed_reader.py` | 6 tests | Timing, chunking, ORP, control behavior. | Complements exact-target integration test. |
 | 79 | `tests/test_turbo_scan.py` | 33 tests | Process sizing, priorities, queues, pipeline, cancellation, telemetry. | Main high-parallelism regression suite. |
 | 80 | `tests/test_uninstall_export.py` | 12 tests | Total-uninstall state discovery/export/validation/preservation. | Protects the v1.5 default continuity guarantee. |

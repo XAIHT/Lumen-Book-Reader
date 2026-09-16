@@ -1504,7 +1504,7 @@ class MarksManagerDialog(ScreenFittingDialog):
 
 
 class DefinitionSettingsDialog(ScreenFittingDialog):
-    """Configuration and live Ollama discovery for the deep-definition ladder."""
+    """Configuration and live discovery for complementary definition sources."""
 
     def __init__(self, parent: QWidget, values: dict[str, Any]):
         super().__init__(parent)
@@ -1524,9 +1524,10 @@ class DefinitionSettingsDialog(ScreenFittingDialog):
         heading.setObjectName("dialogHeading")
         root.addWidget(heading)
         intro = QLabel(
-            "When ordinary dictionaries miss a coined, inflected, technical, or contextual "
-            "expression, Lumen can combine transparent local analysis, Tlamatini web evidence, "
-            "and an optional Ollama lexicographer. Every source is appended and clearly labeled."
+            "Lumen combines deterministic dictionaries with optional expert sources. When "
+            "Ollama is enabled, its contextual lexicographer starts with every lookup, in "
+            "parallel with the deterministic sources. Every usable result is appended and "
+            "clearly labeled."
         )
         intro.setObjectName("dialogIntro")
         intro.setWordWrap(True)
@@ -1562,8 +1563,14 @@ class DefinitionSettingsDialog(ScreenFittingDialog):
         ollama_title = QLabel("OLLAMA  ·  CONTEXTUAL AI DEFINER")
         ollama_title.setObjectName("eyebrow")
         root.addWidget(ollama_title)
-        self.ollama_check = QCheckBox("Enable Ollama only after conventional sources miss")
+        self.ollama_check = QCheckBox(
+            "Always request an Ollama contextual definition in parallel"
+        )
         self.ollama_check.setChecked(bool(self._values["ollama_enabled"]))
+        self.ollama_check.setToolTip(
+            "When enabled, every definition lookup immediately requests both deterministic "
+            "sources and the selected Ollama model."
+        )
         root.addWidget(self.ollama_check)
 
         form = QFormLayout()
@@ -1954,7 +1961,7 @@ class ReaderWindow(QMainWindow):
         self.definer_button = QPushButton("◇  Definer")
         self.definer_button.setObjectName("toolButton")
         self.definer_button.setToolTip(
-            "Configure contextual analysis, Tlamatini Googler, and Ollama definition fallbacks"
+            "Configure deterministic analysis, Tlamatini evidence, and parallel Ollama definitions"
         )
         self.definer_button.clicked.connect(self.show_definition_settings)
         self.header_layout.addWidget(self.definer_button)
@@ -3109,6 +3116,11 @@ class ReaderWindow(QMainWindow):
             self._dictionary_cache[cache_key] = cached
             self.definition_card.add_entry(cached)
 
+        # Ollama is complementary, not a miss-only fallback. Start it before
+        # the deterministic work so a configured model runs from the beginning
+        # and never waits for WordNet or the conventional HTTP providers.
+        self._start_enabled_ollama_definition(term, session_id)
+
         self._dictionary_pending_sources.add("wordnet")
         future = self._dictionary_executor.submit(lookup_offline_wordnet_entries, term, None, 2)
         self._dictionary_future = future
@@ -3138,11 +3150,11 @@ class ReaderWindow(QMainWindow):
             self._start_dictionary_source(source, term, session_id, 1)
         self.dictionary_session_timer.start()
         self._update_dictionary_session()
-        # Conventional services receive a short head start. A total miss then
-        # activates the expert ladder without wasting the full 20-second window.
+        # Context morphology and Googler remain miss-only enrichment. Ollama,
+        # when enabled, is already running in parallel from the lookup's start.
         QTimer.singleShot(
             1800,
-            lambda lookup_term=term, serial=session_id: self._start_deep_dictionary_fallbacks(
+            lambda lookup_term=term, serial=session_id: self._start_miss_only_definition_fallbacks(
                 lookup_term, serial
             ),
         )
@@ -3258,7 +3270,7 @@ class ReaderWindow(QMainWindow):
             self._dictionary_cache[cache_key] = added[0]
             self.dictionary_cache.put(cache_key, added[0])
 
-    def _start_deep_dictionary_fallbacks(self, term: str, request_id: int) -> None:
+    def _start_miss_only_definition_fallbacks(self, term: str, request_id: int) -> None:
         if (
             request_id != self._dictionary_request_id
             or not self._dictionary_started_at
@@ -3300,13 +3312,18 @@ class ReaderWindow(QMainWindow):
 
             future.add_done_callback(deliver_googler_result)
 
-        if bool(settings.get("ollama_enabled")):
-            model = str(settings.get("ollama_model") or DEFAULT_OLLAMA_MODEL).strip()
-            if model:
-                self._dictionary_pending_sources.add("ollama")
-                self._start_ollama_source(term, request_id, model)
-
         self._maybe_finish_dictionary_session()
+
+    def _start_enabled_ollama_definition(self, term: str, request_id: int) -> None:
+        """Start the optional LLM beside deterministic sources for every lookup."""
+        settings = self.definition_fallbacks
+        if not bool(settings.get("ollama_enabled")):
+            return
+        model = str(settings.get("ollama_model") or DEFAULT_OLLAMA_MODEL).strip()
+        if not model:
+            return
+        self._dictionary_pending_sources.add("ollama")
+        self._start_ollama_source(term, request_id, model)
 
     def _start_ollama_source(self, term: str, request_id: int, model: str) -> None:
         if (
@@ -3378,7 +3395,7 @@ class ReaderWindow(QMainWindow):
             and not self.definition_card.definition_count
             and not self._deep_definition_started
         ):
-            self._start_deep_dictionary_fallbacks(
+            self._start_miss_only_definition_fallbacks(
                 self._dictionary_term, self._dictionary_request_id
             )
             return
