@@ -27,8 +27,8 @@ Pipeline
 
 PRIVATE DATA GUARD - THIS SCRIPT NEVER REWRITES HISTORY
 --------------------------------------------------------
-Tagging is the only git write it performs, and a tag is a FORWARD-ONLY
-addition. There is no rebase, no amend, no reset, no force-push, no tag
+Git writes only fetch missing origin tags and, with --bump, add a new local
+annotated tag. There is no rebase, no amend, no reset, no force-push, no tag
 deletion, and no ``--force`` flag to add one. If the tag it wants already
 exists, it STOPS and says so rather than moving anything. ``git log`` stays
 truthful, always.
@@ -58,6 +58,7 @@ from versioning import (
     derive_version_from_git,
     git_commit,
     parse_semver,
+    refresh_build_tags,
     resolve_build_version,
     safe_version_for_path,
     warn_if_tag_behind,
@@ -264,11 +265,13 @@ def main(argv=None) -> int:
         sys.exit("Pass either --bump or --version, not both.")
 
     if args.bump:
+        if not args.prepare_only:
+            refresh_build_tags()
         current = derive_version_from_git() or declared_version() or "0.0.0"
         version = bump_version(current, args.bump)
         print(f"Bumping {args.bump}: {current} -> {version}")
     else:
-        version = resolve_build_version(args.version or None)
+        version = resolve_build_version(args.version or None, refresh_tags=not args.prepare_only)
 
     if parse_semver(version.split("+")[0]) is None:
         sys.exit(f"REFUSING: {version!r} is not a valid SemVer version.")

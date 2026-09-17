@@ -11,6 +11,7 @@ if sys.platform != "win32" and not (os.environ.get("DISPLAY") or os.environ.get(
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from lumen_reader import ui as ui_module
@@ -30,6 +31,10 @@ def _application() -> QApplication:
 def reader_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app = _application()
     monkeypatch.setattr(ui_module, "lookup_offline_wordnet_entries", lambda *_args: [])
+    monkeypatch.setattr(ui_module, "get_version_info", lambda: {
+        "public": "9.8.7", "build": "9.8.7+test", "commit": "abc123456789",
+        "date": "2026-09-17T12:00:00Z",
+    })
     index = LibraryIndex(tmp_path / "library.db")
     store = ReaderStore(tmp_path / "reader.json")
     store.data["theme"] = "sepia"
@@ -47,6 +52,9 @@ def reader_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "1.1 Contents of Modern Radio Frequency Technologies and Their Applications"
     )
     window._set_source_path(SOURCE_PATH)
+    # Keep real Windows font/DPI metrics without the window manager clamping
+    # the 2400px logical test surface to the physical monitor at high scaling.
+    window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     window.show()
     app.processEvents()
     yield window
@@ -86,6 +94,24 @@ def test_reader_header_controls_never_overlap(
         reader_window.reader_search_cluster.geometry().right()
         < reader_window.smaller_button.geometry().left()
     )
+    assert reader_window.version_badge.isVisible()
+
+
+@pytest.mark.parametrize("theme", ["dark", "light", "sepia"])
+def test_build_version_badge_remains_visible_on_shelf_and_reader(reader_window, theme):
+    reader_window.store.data["theme"] = theme
+    reader_window._apply_app_theme()
+    for surface in (0, 1):
+        reader_window.main_stack.setCurrentIndex(surface)
+        reader_window._update_header_responsiveness()
+        QApplication.processEvents()
+        badge = reader_window.version_badge
+        assert badge.isVisible()
+        assert badge.text() == "v9.8.7"
+        assert "9.8.7" in badge.accessibleName()
+        assert "abc123456789" in badge.toolTip()
+        assert "2026-09-17T12:00:00Z" in badge.toolTip()
+        assert badge.width() >= badge.sizeHint().width()
 
 
 def test_reader_header_restores_optional_actions_when_space_returns(

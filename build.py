@@ -99,6 +99,7 @@ SUPPORT_FILES = [
 # corpora reader by name at call time, and PySide6's WebEngine trio is only
 # imported inside ui.py's function bodies on some paths.
 HIDDEN_IMPORTS = [
+    "lumen_reader._version",  # generated Git-tag identity shown in the header
     "nltk.corpus",
     "nltk.corpus.reader.wordnet",
     "nltk.tokenize",

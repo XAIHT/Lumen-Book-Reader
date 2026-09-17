@@ -17,6 +17,13 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ### Changed
 
+- Added a theme-matched version badge beneath the main-window LUMEN wordmark,
+  visible on the shelf and while reading, with build commit/date in its tooltip.
+  It uses the existing generated version module shared with release metadata.
+- Builds refresh origin's tags before deriving the checkout's reachable release
+  version, with a 20-second timeout and local-tag fallback when offline. Explicit
+  and inherited build versions, prerequisite-only checks, and the running reader
+  do not trigger a tag refresh. Existing tags and the checkout are not force-updated.
 - Ollama is now an independent definition source rather than a miss-only
   fallback. When enabled with a configured model, its bounded contextual
   request starts at the beginning of every lookup in parallel with the cache,
@@ -40,11 +47,31 @@ the version number; see [RELEASING.md](RELEASING.md).
   preserved under a timestamped name before replacement. Missing release output
   can no longer be substituted with a different version's folder.
 
+---
+
+## [1.7.2] — 2026-09-03
+
+Patch release: the optional Tlamatini definition helper no longer relaunches
+the reader instead of the helper bridge in frozen builds.
+
+### Fixed
+
 - Fixed the optional Tlamatini Googler definition fallback relaunching
   `Lumen.exe` in frozen Windows builds. The helper now resolves and validates
   Tlamatini's adjacent Python runtime, never reuses the frozen application's
   executable, keeps selected text in a separate non-shell argument, and fails
   closed without launching a process when no trusted helper runtime exists.
+
+---
+
+## [1.7.1] — 2026-09-02
+
+Housekeeping release: repository cleanup only, no change to shipped code.
+
+### Removed
+
+- Removed three stray screenshot files (`image.png`, `image copy.png` and
+  `image copy 2.png`) that had been committed to the repository root.
 
 ---
 
@@ -489,7 +516,7 @@ Tag `v1.0.0` → `aaf218d`. The first release.
 
 ## Notes on version history
 
-Two places where a tag's message and a tag's contents disagree. Both are
+Three places where a tag's message and a tag's contents disagree. All are
 recorded here rather than corrected, because **git history in this project is
 never rewritten** — no rebase, no amend, no force-push, no tag deletion.
 
@@ -500,3 +527,10 @@ never rewritten** — no rebase, no amend, no force-push, no tag deletion.
 2. **The RSVP start/end markers** shipped in **`v1.0.4`**, but `README.md` and
    `SpeedReadingToolInLumenReader.md` both introduce them as *"new in 1.1.0"*.
    `v1.1.0` is the release scheme.
+3. **`v1.7.1` and `v1.7.2` are each annotated with the commit that follows
+   them.** `v1.7.1` reads *"Patch of definition execution bug"* but points at
+   `821322a`, which only deletes three stray screenshots; that patch is
+   `69e7acf`. `v1.7.2` reads *"AI Contextual definition improved, to be always
+   available…"* but points at `69e7acf`, the definition-execution patch; the
+   Ollama parallel-source work is `cd84008` and is still unreleased. The
+   sections above list what each tag **contains**, not what it says.

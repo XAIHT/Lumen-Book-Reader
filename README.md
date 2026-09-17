@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.7.0" src="https://img.shields.io/badge/LUMEN-v1.7.0-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.7.2" src="https://img.shields.io/badge/LUMEN-v1.7.2-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -299,6 +299,12 @@ versions in `requirements-release.txt`, including MCP SDK/types 2.2.0. It checks
 and reconciles those dependencies on reuse, independently of other applications'
 shared Python packages. Use `python build_complete_release.py --prepare-only`
 to verify dependencies without freezing. See [RELEASING.md](RELEASING.md).
+
+The main window displays its build version in a compact badge beneath **LUMEN**,
+in every theme, on both the library and reading surfaces. Normal builds refresh
+the GitHub origin's tags and bake the checkout's reachable release version into
+the app; offline builds use local tags. The badge reads that embedded value and
+does not contact GitHub at runtime. Its tooltip includes the build commit/date.
 
 The wizard asks four things and nothing else: where Lumen goes, where the
 library lives, **which file types to register** — `.epub` and `.pdf` as separate

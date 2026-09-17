@@ -73,6 +73,7 @@ from .settings_dialog import ConfigurationDialog
 from .shelf import LibraryShelf, source_path_text
 from .turbo_scan import ScanConfig, TurboScanner
 from .storage import ReaderStore
+from .version import get_version_info
 from .speed_reader import (
     SpeedReaderDialog,
     SpeedReaderSettings,
@@ -1829,9 +1830,28 @@ class ReaderWindow(QMainWindow):
         self.sidebar_button.clicked.connect(self._toggle_sidebar)
         self.header_layout.addWidget(self.sidebar_button)
 
+        self.brand_identity = QWidget()
+        self.brand_identity.setObjectName("brandIdentity")
+        brand_layout = QVBoxLayout(self.brand_identity)
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(3)
         self.brand = QLabel("LUMEN")
         self.brand.setObjectName("brand")
-        self.header_layout.addWidget(self.brand)
+        brand_layout.addWidget(self.brand, 0, Qt.AlignmentFlag.AlignHCenter)
+        version_info = get_version_info()
+        self.version_badge = QLabel(f"v{version_info['public']}")
+        self.version_badge.setObjectName("versionBadge")
+        self.version_badge.setTextFormat(Qt.TextFormat.PlainText)
+        self.version_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.version_badge.setFixedHeight(18)
+        self.version_badge.setAccessibleName(f"Lumen Book Reader version {version_info['public']}")
+        self.version_badge.setToolTip(
+            f"Lumen Book Reader {version_info['build']}\n"
+            f"Commit: {version_info['commit']}\n"
+            f"Built: {version_info['date'] or 'development checkout'}"
+        )
+        brand_layout.addWidget(self.version_badge, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.header_layout.addWidget(self.brand_identity)
 
         self.library_button = QPushButton("←  MY LIBRARY")
         self.library_button.setObjectName("libraryButton")
@@ -3820,9 +3840,8 @@ class ReaderWindow(QMainWindow):
             widget.hide()
             self.header_layout.invalidate()
 
-        # The brand is decorative, while every remaining item is a direct
-        # reading control.  On the smallest supported window it is the final
-        # safe release valve after all optional actions have collapsed.
+        # Collapse the wordmark on the smallest window, keeping the installed
+        # version visible in its compact badge without crowding reading controls.
         if self._header_minimum_width() > available:
             self.brand.hide()
             self.header_layout.invalidate()
@@ -4072,6 +4091,7 @@ class ReaderWindow(QMainWindow):
             QWidget {{ font-family: 'Segoe UI'; font-size: 13px; }}
             #header {{ background: {c['panel']}; border-bottom: 1px solid {c['line']}; }}
             #brand {{ color: {c['accent']}; font-size: 15px; font-weight: 800; letter-spacing: 3px; }}
+            #versionBadge {{ color: {c['accent']}; background: {c['accent2']}; border: 1px solid {c['line']}; border-radius: 9px; padding: 0 9px; font-size: 10px; font-weight: 650; letter-spacing: 0.5px; }}
             #libraryButton {{ color: {c['accent']}; background: {c['accent2']}; border: 1px solid {c['accent']}; border-radius: 16px; padding: 6px 13px; font-size: 10px; font-weight: 750; letter-spacing: 1px; }}
             #libraryButton:hover {{ color: #09130f; background: {c['accent']}; }}
             #libraryButton:pressed {{ padding-left: 11px; padding-right: 15px; }}

@@ -44,8 +44,9 @@ you are happy:
 git push origin v1.5.0
 ```
 
-> **The pipeline never rewrites history.** Adding a tag is the only git write
-> it performs. There is no rebase, no amend, no reset, no force-push and no tag
+> **The pipeline never rewrites history.** Git writes are limited to fetching
+> missing origin tags and adding a new tag when `--bump` is requested.
+> There is no rebase, no amend, no reset, no force-push and no tag
 > deletion — and no flag that could add one. If the tag already exists it stops
 > and tells you. `tests/test_release_scheme.py` enforces this by inspecting the
 > actual `git` invocations in the source, not the comments.
@@ -139,6 +140,20 @@ which file types it registers) *into* the folder, then zips it and writes a
 ---
 
 ## Versioning
+
+Normal builds fetch tags from `origin` (the GitHub repository) before selecting
+the most recent release tag reachable from the checkout being built. Fetching
+does not check out another commit, force-update tags, or push anything. It has a
+20-second timeout with credential prompts disabled; an offline/missing remote
+falls back to local tags, then the existing declared-version fallback.
+`--version` and inherited `LUMEN_VERSION` bypass this refresh, as does
+`--prepare-only`. `--bump` refreshes before calculating the next local version.
+
+The reader's permanent version pill beneath the LUMEN wordmark consumes
+`get_version_info()` from the embedded `_version.py`, just like Tlamatini's
+build-stamped identity. The build explicitly includes that generated module in
+the frozen reader. The visible version is the installed build, never a live
+GitHub/latest-release lookup; commit and build timestamp appear in its tooltip.
 
 `lumen_reader/version.py` is the single source of truth, at build time **and**
 at runtime. Resolution order:

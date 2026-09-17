@@ -18,7 +18,8 @@ Precedence for the build version (highest to lowest):
   1. Explicit ``--version X.Y.Z`` CLI flag.
   2. ``$LUMEN_VERSION`` (``build.py`` exports it so all three artefacts -
      ``Lumen.exe``, ``Installer.exe``, ``Uninstaller.exe`` - share ONE version).
-  3. ``git describe --tags --abbrev=0 --match 'v[0-9]*'``.
+  3. Refresh origin's tags (bounded, offline-tolerant), then
+     ``git describe --tags --abbrev=0 --match 'v[0-9]*'`` for this checkout.
   4. The version declared in ``pyproject.toml``.
   5. ``0.0.0+unknown`` sentinel.
 
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,7 +99,33 @@ def _sanitize_version(raw: str) -> str:
     return (raw or "").lstrip(" vV").strip()
 
 
-def resolve_build_version(cli_arg: Optional[str] = None) -> str:
+def refresh_build_tags() -> bool:
+    """Refresh origin's tags at build time without moving HEAD or existing tags.
+
+    The installed app never calls this. Offline/source-archive builds retain
+    the local-tag/declared-version fallback, and interactive credential prompts
+    cannot strand the release command.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        return False
+    print("Refreshing release tags from origin (GitHub)...", flush=True)
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never")
+    try:
+        result = subprocess.run(
+            ["git", "fetch", "--no-tags", "--no-recurse-submodules",
+             "--no-write-fetch-head", "origin", "refs/tags/*:refs/tags/*"],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode == 0:
+            print("  Release tags refreshed; selecting the tag reachable from this checkout.", flush=True)
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    print("  WARNING: tag refresh unavailable; using local Git tags or the declared fallback.", flush=True)
+    return False
+
+
+def resolve_build_version(cli_arg: Optional[str] = None, *, refresh_tags: bool = True) -> str:
     """Return the build version using the documented precedence.
 
     Pass the result of ``extract_cli_version(sys.argv)`` as *cli_arg*.
@@ -107,6 +135,8 @@ def resolve_build_version(cli_arg: Optional[str] = None) -> str:
     env_v = os.environ.get(ENV_VAR_NAME, "").strip()
     if env_v:
         return _sanitize_version(env_v)
+    if refresh_tags:
+        refresh_build_tags()
     derived = derive_version_from_git()
     if derived and derived != "0.0.0":
         return derived
@@ -240,6 +270,7 @@ __all__ = [
     "render_pyinstaller_version_file",
     "render_versioninfo_for",
     "resolve_build_version",
+    "refresh_build_tags",
     "safe_version_for_path",
     "semver_to_win32_tuple",
     "warn_if_tag_behind",
