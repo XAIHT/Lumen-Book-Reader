@@ -202,7 +202,7 @@ class RetrievalService:
         target: str = "path",
         roots: Sequence[str] = (),
         formats: Sequence[str] = (),
-        case_sensitive: str = "auto",
+        case_sensitive: str | bool = "auto",
         include_sections: bool = False,
         sort: str = "path",
         limit: int = 50,
@@ -216,7 +216,8 @@ class RetrievalService:
         }
         if target not in allowed_targets:
             raise RetrievalError("INVALID_ARGUMENT", f"Unsupported glob target: {target}.")
-        sensitive = case_sensitive == "true" or (case_sensitive == "auto" and os.name != "nt")
+        case_token = _canonical_case_token(case_sensitive)
+        sensitive = case_token == "true" or (case_token == "auto" and os.name != "nt")
         matcher = compile_glob(pattern, case_sensitive=sensitive)
         format_values = _formats(formats)
         with self.pool.connection() as connection:
@@ -225,7 +226,7 @@ class RetrievalService:
             revision = corpus_revision(connection) if ready else 0
             digest = _query_digest({
                 "pattern": pattern, "target": target, "roots": roots,
-                "formats": format_values, "case": case_sensitive, "sections": include_sections,
+                "formats": format_values, "case": case_token, "sections": include_sections,
                 "sort": sort,
             })
             root_digest = _root_digest(selected)
@@ -1433,6 +1434,25 @@ def _add_in(
 
 def _root_id(path: str) -> str:
     return "root_" + hashlib.sha256(os.path.normcase(path).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def _canonical_case_token(case_sensitive: str | bool) -> str:
+    """Normalise ``case_sensitive`` to one of ``auto`` / ``true`` / ``false``.
+
+    ``lumen_glob`` has always taken a tri-state STRING, while its sibling
+    ``lumen_grep`` takes a plain BOOLEAN. A caller reading one signature and
+    calling the other is an easy and common mistake, so a real ``bool`` is
+    accepted here and mapped onto the equivalent token.
+
+    The canonical token - never the caller's raw value - is what feeds the
+    pagination digest, so ``True`` and ``"true"`` describe the SAME query and
+    a cursor issued for one stays valid for the other. The three documented
+    spellings map to themselves, so existing cursors are unaffected.
+    """
+    if isinstance(case_sensitive, bool):
+        return "true" if case_sensitive else "false"
+    token = str(case_sensitive).strip().casefold()
+    return token if token in {"auto", "true", "false"} else "false"
 
 
 def _root_digest(roots: Sequence[RootScope]) -> str:

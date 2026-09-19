@@ -45,7 +45,12 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
 
     @server.tool(
         name="lumen_glob",
-        description="Glob over indexed relative paths and book metadata; never traverses caller-supplied filesystem paths.",
+        description=(
+            "Glob over indexed relative paths and book metadata; never traverses "
+            "caller-supplied filesystem paths. case_sensitive is tri-state: "
+            "'auto' (default, follows the platform), 'true' or 'false'. A plain "
+            "boolean is also accepted and means the same as 'true'/'false'."
+        ),
         annotations=READ_ONLY,
         structured_output=True,
     )
@@ -54,7 +59,7 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
         target: str = "path",
         roots: list[str] | None = None,
         formats: list[str] | None = None,
-        case_sensitive: str = "auto",
+        case_sensitive: str | bool = "auto",
         include_sections: bool = False,
         sort: str = "path",
         limit: int = 50,
