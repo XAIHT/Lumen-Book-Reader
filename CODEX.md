@@ -22,6 +22,28 @@ This is the code-oriented memory of the project: what exists, when it arrived, h
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
 
+## 0.7 Publication, file creation and modification dates — 2026-09-23
+
+Full implementation contract: [BookDates.md](BookDates.md). Existing indexes
+upgrade additively; a normal sweep backfills date metadata without rereading
+unchanged body text or rebuilding FTS/passages. No book files are edited.
+
+| File | Implementation and safety details |
+|---|---|
+| `lumen_reader/book_dates.py` | Conservative EPUB/PDF publication parsing, year/month/day precision, true birth time, UTC query bounds, local display, parameterized predicates, null-last ordering and API provenance. |
+| `library_index.py` | Six additive columns, four B-tree indexes; metadata extractors and `BookRow` expose dates; search/count share the date predicates before pagination. |
+| `turbo_scan.py` | Birth-aware triage; unchanged rows with pending metadata get zero text budget; date-only writes preserve IDs/FTS/passages and failed backfills remain retryable. |
+| `shelf.py` | Three visible aligned columns, clickable newest/oldest ordering, validated range controls, accessible date text and narrow-window stacked layout. |
+| `retrieval/service.py`, `mcp_server/tools.py` | Optional `date_filters` on glob/search/grep, date sorts on glob, book date fields across resources/hits, pending-date status, explicit legacy schema error, signed date cursor binding. |
+| `tests/test_book_dates.py`, `tools/validate_book_dates.py` | Real migration/sweep/STDIO tests plus visible native Qt interactions, themes and resize verification; test data is isolated from the user's library. |
+| `accel.py`, `tests/test_date_backends.py` | Actual-executor guard prevents GPU labeling without a Turbo Sweep adapter; all GPU/DirectStorage/NVMe capability combinations retain the date contract. Capacity planning adds a conservative date-index allowance. No GPU extraction kernel is newly claimed or shipped. |
+
+Publication dates are edition metadata, not certified original publication.
+Missing metadata remains unknown; PDF creation time is never a release-date
+fallback. Birth time may change when copied and is not "date added to Lumen."
+No dependencies or GPU/DirectStorage requirements changed. Source-mode MCP
+clients must reconnect; installed executables require rebuilding/upgrading.
+
 ## 0.6 Parallel contextual LLM definitions — 2026-09-16
 
 Ollama is now a complementary definition source, not the final rung of a

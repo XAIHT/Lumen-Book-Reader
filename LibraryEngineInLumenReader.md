@@ -57,7 +57,13 @@ Threads do the I/O-bound stages (walking, triage, writing — all of which relea
 
 ### Triage: the cheap answer first
 
-Before a book is handed to an extractor, triage asks the index for the `size` and `mtime_ns` it recorded last time. If both match, the book is **already current** and is never opened. Only its `seen_gen` is stamped.
+Before a book is handed to an extractor, triage compares `size` and `mtime_ns`.
+If both match and date metadata is current (including filesystem birth time),
+the book is **already current** and is never opened; only `seen_gen` is stamped.
+An older row with pending date metadata takes a metadata-only worker path with
+zero text budget. Its writer updates dates/generation only, retaining book IDs,
+FTS rows, and passage revisions. Once attempted successfully, an unknown release
+date is not retried on every sweep. See [BookDates.md](BookDates.md).
 
 This is why a second sweep of an unchanged library costs one walk and nothing else, and why adding ten books to a shelf of ten thousand reads ten books.
 
@@ -81,7 +87,7 @@ SQLite in WAL mode, `synchronous=NORMAL`, `temp_store=MEMORY`, and a 128 MB page
 
 | Table | Holds |
 |---|---|
-| `books` | One row per file: path, size, `mtime_ns`, title, author, publisher, language, subjects, description, pages, whether it has text, whether it read cleanly, and `seen_gen` |
+| `books` | One row per file: path, size, `mtime_ns`, nullable `created_ns`, precision-preserving `published_date` with start/end/source, `date_metadata_version`, title, author, publisher, language, subjects, description, pages, text/readability flags, and `seen_gen` |
 | `books_fts` | FTS5 over title, author, filename, subjects, publisher |
 | `content_fts` | FTS5 over the extracted body text |
 | `fts_rowid` | Where each book sits in each FTS table (see below) |
@@ -89,6 +95,14 @@ SQLite in WAL mode, `synchronous=NORMAL`, `temp_store=MEMORY`, and a 128 MB page
 | `index_meta` | Small durable facts about the index itself |
 
 Both FTS5 tables tokenize with `unicode61 remove_diacritics 2`, so *Gödel* matches *Godel*.
+
+Publication and file dates use dedicated root-scoped B-tree indexes, not FTS
+tokens. Shelf and MCP bind date predicates before applying row/candidate limits.
+Publication intervals use overlap semantics; file ranges are inclusive UTC
+instants. Unknowns stay last when sorting either way. The shelf paints three
+aligned columns, stacks them below identity on narrow windows, and exposes
+sort headers plus date range controls. [BookDates.md](BookDates.md) is the shared
+extraction, schema, timezone, migration and testing contract.
 
 ### The writer boundary — one malformed book cannot stop the fleet
 
@@ -259,6 +273,14 @@ Extraction and search are `Protocol`s with named implementations:
 
 Today no GPU kernel is registered in this build, so both `auto` paths resolve to the CPU fleet and SQLite FTS5 — which is what actually runs. Rather than hide that, `extraction_backend_status()` and `search_backend_status()` distinguish the two reasons a fast path is unavailable:
 
+`resolve_sweep_backend()` adds a second execution guard: a registered candidate
+without a Turbo Sweep adapter still falls back explicitly to CPU. The new date
+contract is shared across single-thread and multiprocess execution, with tests
+for all GPU/DirectStorage/NVMe presence combinations. Date values and SQL range
+predicates do not require VRAM, DirectStorage or any extended capability. The
+capacity estimate includes a 384-byte/book allowance for date fields/B-trees;
+actual overhead depends on root length and SQLite page fill. See BookDates.md.
+
 > *"Not on this machine: no CUDA-capable GPU detected."*
 
 > *"Hardware is ready (24 GB VRAM), but no resident index kernel is registered in this build. Registering one switches Lumen over — see `accel.register_search_backend`."*
@@ -361,7 +383,7 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 
 ## Sensible future extensions
 
-- Register a real GPU extraction kernel behind `accel.register_extraction_backend` and let `auto` pick it up with no other change.
+- Implement a real GPU extraction kernel **and** its Turbo Sweep queue/result/cancellation adapter before enabling execution. Registration alone is only a capability declaration. Preserve original-file dates, publication precision/provenance, and the metadata-only backfill flag.
 - Wire the search-backend preference through to `LibraryIndex.search()`, so a registered resident-index kernel is reachable.
 - Make the shard count live: open one connection per shard, sweep and search them in parallel, and let `shard_path()` name the files it already knows how to name.
 - Watch the library folder for changes and sweep incrementally, instead of only on demand and at startup.

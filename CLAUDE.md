@@ -20,6 +20,7 @@ have real depth:
 | Reading surface | `lumen_reader/ui.py`, `book.py`, `pdf_book.py` | — |
 | RSVP speed reader | `lumen_reader/speed_reader.py` | [SpeedReadingToolInLumenReader.md](SpeedReadingToolInLumenReader.md) |
 | Library engine | `lumen_reader/turbo_scan.py`, `library_index.py`, `accel.py`, `machine_profile.py` | [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md) |
+| Book dates | `lumen_reader/book_dates.py`, shelf/index/retrieval date paths | [BookDates.md](BookDates.md) |
 | Definitions | `lumen_reader/dictionary.py`, `smart_definition.py` | — |
 | Release scheme | `build_complete_release.py` and friends | [RELEASING.md](RELEASING.md) |
 
@@ -40,6 +41,13 @@ the whole file.
 ```
 
 ## Tests
+
+Date-feature regression command (native visible progress and actual UI windows):
+`.venv-release\Scripts\python.exe tools\validate_book_dates.py`. This uses
+temporary books/indexes and refuses offscreen/minimal rendering. Preserve the
+date contract: publication metadata is not PDF creation time, missing values
+remain unknown, and old-row backfills must retain FTS/passage IDs. The installed
+reader/MCP binaries need rebuilding; source changes alone do not upgrade them.
 
 ```powershell
 python -m pytest        # 322 tests

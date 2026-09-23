@@ -50,7 +50,12 @@ def shelf(tmp_path: Path):
     index = LibraryIndex(tmp_path / "i.db")
     index.scan(root, workers=1)
     widget = LibraryShelf(index, str(root))
+    if os.environ.get("LUMEN_VISIBLE_TESTS") == "1":
+        widget.resize(1360, 800)
+        widget.show()
+        _application().processEvents()
     yield widget
+    widget.close()
     widget.deleteLater()
     index.close()
 

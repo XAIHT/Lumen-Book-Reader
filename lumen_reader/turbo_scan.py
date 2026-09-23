@@ -58,6 +58,8 @@ process that Windows spawns.
 
 from __future__ import annotations
 
+from .book_dates import DATE_METADATA_VERSION, creation_ns
+
 import ctypes
 import fnmatch
 import multiprocessing as mp
@@ -777,6 +779,7 @@ def _failed_index_record(record: dict[str, Any], exception: BaseException) -> di
         "ext": clean_unicode_text(record.get("ext", "")).casefold(),
         "size": int(record.get("size") or 0),
         "mtime_ns": int(record.get("mtime_ns") or 0),
+        "dates_only": bool(record.get("dates_only")),
         "title": clean_unicode_text(Path(path_text).stem),
         "author": "Unknown author",
         "publisher": "",
@@ -822,7 +825,8 @@ def extractor_main(
         if job is None or abort.is_set():
             break
 
-        path_text, suffix, text_budget, page_cap, size, mtime_ns = job
+        path_text, suffix, text_budget, page_cap, size, mtime_ns = job[:6]
+        dates_only = bool(job[6]) if len(job) > 6 else False
         vitals[_V_STATE] = _STATE_BUSY
         vitals[_V_STARTED_MS] = int(time.monotonic() * 1000)
         _write_current(path_buffer, path_text)
@@ -843,6 +847,7 @@ def extractor_main(
         record["ext"] = suffix
         record["size"] = size
         record["mtime_ns"] = mtime_ns
+        record["dates_only"] = dates_only
 
         vitals[_V_DONE] += 1
         vitals[_V_BYTES] += int(size)
@@ -971,9 +976,9 @@ class TurboScanner:
         # Resolve the engine before anything spawns, and say which one won.  A
         # sweep that quietly ran on the CPU while the reader believed the GPU
         # was working would be the same class of lie this rewrite exists to end.
-        from .accel import resolve_extraction_backend
+        from .accel import resolve_sweep_backend
 
-        self.backend, self.backend_reason = resolve_extraction_backend(
+        self.backend, self.backend_reason = resolve_sweep_backend(
             self.config.extraction_backend
         )
         self._say(
@@ -1371,7 +1376,7 @@ class TurboScanner:
                 break
             directory, depth = claimed
             children: list[tuple[str, int]] = []
-            found: list[tuple[str, int, int, str]] = []
+            found: list[tuple[str, int, int, str, int | None]] = []
             examined = 0
 
             try:
@@ -1403,7 +1408,7 @@ class TurboScanner:
                                 continue
                             if max_bytes and stat.st_size > max_bytes:
                                 continue
-                            found.append((entry.path, stat.st_size, stat.st_mtime_ns, suffix))
+                            found.append((entry.path, stat.st_size, stat.st_mtime_ns, suffix, creation_ns(stat)))
                         except OSError:
                             continue
             except (OSError, PermissionError) as exception:
@@ -1461,7 +1466,7 @@ class TurboScanner:
         reaches an extractor.
         """
         connection = self._connect(read_only=True)
-        batch: list[tuple[str, int, int, str]] = []
+        batch: list[tuple] = []
         budget = self._text_budget
         page_cap = self.config.pdf_page_cap
         chunk = max(16, self.config.triage_batch)
@@ -1502,7 +1507,7 @@ class TurboScanner:
     def _triage_batch(
         self,
         connection: sqlite3.Connection,
-        batch: Sequence[tuple[str, int, int, str]],
+        batch: Sequence[tuple],
         budget: int,
         page_cap: int,
     ) -> None:
@@ -1510,25 +1515,31 @@ class TurboScanner:
             time.sleep(0.1)
 
         marks = ",".join("?" * len(batch))
-        known: dict[str, tuple[int, int, int, int]] = {}
+        known: dict[str, tuple] = {}
         try:
             rows = connection.execute(
-                f"SELECT id, path, size, mtime_ns, has_text FROM books"
+                f"SELECT id, path, size, mtime_ns, has_text, date_metadata_version, created_ns FROM books"
                 f" WHERE root = ? AND path IN ({marks})",
                 [self.root_key, *(item[0] for item in batch)],
             )
             for row in rows:
-                known[row["path"]] = (row["id"], row["size"], row["mtime_ns"], row["has_text"])
+                known[row["path"]] = (row["id"], row["size"], row["mtime_ns"], row["has_text"],
+                                      row["date_metadata_version"], row["created_ns"])
         except sqlite3.Error:
             known = {}
 
         want_text = budget > 0
         unchanged: list[int] = []
-        for path_text, size, mtime_ns, suffix in batch:
+        for item in batch:
+            path_text, size, mtime_ns, suffix = item[:4]
             previous = known.get(path_text)
             if previous is not None:
-                book_id, old_size, old_mtime, has_text = previous
+                book_id, old_size, old_mtime, has_text, date_version, old_creation = previous
                 if old_size == size and old_mtime == mtime_ns and (has_text == 1 or not want_text):
+                    if date_version < DATE_METADATA_VERSION or (len(item) > 4 and item[4] != old_creation):
+                        # Metadata-only upgrade: no page/spine text extraction and no FTS rewrite.
+                        self._dispatch((path_text, suffix, 0, page_cap, size, mtime_ns, True))
+                        continue
                     unchanged.append(book_id)
                     continue
             self._dispatch((path_text, suffix, budget, page_cap, size, mtime_ns))
@@ -1538,7 +1549,7 @@ class TurboScanner:
                 self._books_unchanged += len(unchanged)
             self._touch_queue.put(("touch", unchanged))
 
-    def _dispatch(self, job: tuple[str, str, int, int, int, int]) -> None:
+    def _dispatch(self, job: tuple) -> None:
         """Hand one book to the fleet, waiting for a free slot if need be."""
         if not self._first_dispatch_after:
             with self._lock:
@@ -1881,6 +1892,25 @@ class TurboScanner:
         mtime_ns = int(record.get("mtime_ns") or 0)
 
         existing = cursor.execute("SELECT id FROM books WHERE path = ?", (path_text,)).fetchone()
+        date_values = (
+            record.get("published_date") or "", record.get("published_start"),
+            record.get("published_end"), record.get("publication_source") or "",
+            record.get("created_ns"), int(record.get("date_metadata_version") or 0),
+        )
+        if record.get("dates_only"):
+            if existing is None:
+                raise ValueError("Date backfill target no longer exists; retry the sweep.")
+            # Failed metadata reads must not delete already indexed text or replace
+            # the book's identity. Leave the version pending for the next sweep.
+            if record.get("ok", True):
+                cursor.execute(
+                    "UPDATE books SET published_date=?,published_start=?,published_end=?,"
+                    "publication_source=?,created_ns=?,date_metadata_version=?,seen_gen=? WHERE id=?",
+                    (*date_values, generation, existing[0]),
+                )
+            else:
+                cursor.execute("UPDATE books SET seen_gen=? WHERE id=?", (generation, existing[0]))
+            return
         values = (
             self.root_key, name, record.get("ext") or os.path.splitext(name)[1].casefold(),
             size, mtime_ns, record.get("title", ""), record.get("author", ""),
@@ -1909,6 +1939,11 @@ class TurboScanner:
                 (*values, path_text),
             )
             book_id = cursor.lastrowid
+        cursor.execute(
+            "UPDATE books SET published_date=?,published_start=?,published_end=?,"
+            "publication_source=?,created_ns=?,date_metadata_version=? WHERE id=?",
+            (*date_values, book_id),
+        )
         cursor.execute(
             "INSERT INTO books_fts (title, author, name, subjects, publisher, book_id)"
             " VALUES (?,?,?,?,?,?)",

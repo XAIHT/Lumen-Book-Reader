@@ -46,6 +46,10 @@ from xml.etree import ElementTree as ET
 
 from .text_safety import clean_unicode_text, require_utf8
 from .passage_index import delete_book_passages, ensure_passage_schema
+from .book_dates import (
+    DATE_COLUMNS, DATE_METADATA_VERSION, creation_ns, date_order, date_predicate,
+    epub_publication, pdf_publication,
+)
 
 BOOK_SUFFIXES = {".epub", ".pdf"}
 
@@ -112,6 +116,11 @@ class BookRow:
     subjects: str = ""
     pages: int = 0
     snippet: str = ""
+    published_date: str = ""
+    publication_source: str = ""
+    created_ns: int | None = None
+    mtime_ns: int | None = None
+    date_metadata_version: int = 0
 
     @property
     def kind(self) -> str:
@@ -215,6 +224,7 @@ def _epub_record(path: Path, text_budget: int) -> dict[str, Any]:
         opf_name = _epub_opf_name(archive)
         opf_dir = os.path.dirname(opf_name)
         root = ET.fromstring(archive.read(opf_name))
+        record.update(epub_publication(root))
 
         manifest: dict[str, tuple[str, str]] = {}
         spine: list[str] = []
@@ -305,6 +315,10 @@ def _pdf_record(path: Path, text_budget: int, page_cap: int = 0) -> dict[str, An
             record["subjects"] = [k.strip() for k in re.split(r"[;,]", keywords) if k.strip()]
         record["description"] = _clean(info.get("subject"))[:2000]
         record["pages"] = document.page_count
+        try:
+            record.update(pdf_publication(document.get_xml_metadata()))
+        except Exception:
+            pass  # damaged optional XMP must not discard readable text
 
         if text_budget > 0 and not record.get("locked"):
             chunks: list[str] = []
@@ -357,7 +371,14 @@ def extract_book(job: Sequence[Any]) -> dict[str, Any]:
         "body": "",
         "ok": True,
         "error": "",
+        "date_metadata_version": DATE_METADATA_VERSION,
     }
+    try:
+        stat = path.stat()
+        result["created_ns"] = creation_ns(stat)
+        result["mtime_ns"] = stat.st_mtime_ns
+    except OSError:
+        result["created_ns"] = None
     try:
         if suffix == ".pdf":
             record = _pdf_record(path, text_budget, page_cap)
@@ -379,6 +400,8 @@ def extract_book(job: Sequence[Any]) -> dict[str, Any]:
     result["description"] = record.get("description", "")
     result["pages"] = int(record.get("pages") or 0)
     result["body"] = record.get("body", "")
+    for key in ("published_date", "published_start", "published_end", "publication_source"):
+        result[key] = record.get(key)
     repaired: list[str] = []
     for field in ("title", "author", "publisher", "language", "subjects",
                   "description", "body", "error"):
@@ -448,12 +471,22 @@ CREATE TABLE IF NOT EXISTS books (
     has_text    INTEGER NOT NULL DEFAULT 0,
     ok          INTEGER NOT NULL DEFAULT 1,
     error       TEXT    NOT NULL DEFAULT '',
-    seen_gen    INTEGER NOT NULL DEFAULT 0
+    seen_gen    INTEGER NOT NULL DEFAULT 0,
+    published_date TEXT NOT NULL DEFAULT '',
+    published_start TEXT,
+    published_end TEXT,
+    publication_source TEXT NOT NULL DEFAULT '',
+    created_ns INTEGER,
+    date_metadata_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS books_root  ON books(root);
 CREATE INDEX IF NOT EXISTS books_ext   ON books(root, ext);
 CREATE INDEX IF NOT EXISTS books_title ON books(root, title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS books_gen   ON books(root, seen_gen);
+CREATE INDEX IF NOT EXISTS books_published ON books(root, published_start, id);
+CREATE INDEX IF NOT EXISTS books_published_end ON books(root, published_end, id);
+CREATE INDEX IF NOT EXISTS books_created ON books(root, created_ns, id);
+CREATE INDEX IF NOT EXISTS books_modified ON books(root, mtime_ns, id);
 
 -- One row per completed sweep, so the settings window can say what actually
 -- happened last time instead of leaving the reader to guess.
@@ -746,6 +779,9 @@ class LibraryIndex:
                 self.connection.execute(
                     "ALTER TABLE books ADD COLUMN seen_gen INTEGER NOT NULL DEFAULT 0"
                 )
+            for name, declaration in DATE_COLUMNS.items():
+                if name not in columns:
+                    self.connection.execute(f"ALTER TABLE books ADD COLUMN {name} {declaration}")
 
         scan_runs = self.connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scan_runs'"
@@ -1179,23 +1215,32 @@ class LibraryIndex:
         limit: int = 200,
         offset: int = 0,
         extensions: Sequence[str] | None = None,
+        date_filters: dict[str, str] | None = None,
+        sort: str = "relevance",
     ) -> list[BookRow]:
         """Page through the shelf.  *mode* is ``meta``, ``content``, or ``all``."""
         root_key = normalize_root(root)
         expression, parsed_extensions = build_match_expression(query)
         wanted = list(extensions or []) + parsed_extensions
+        date_sql, date_params = date_predicate(date_filters)
+        order = date_order(sort)
+        if sort not in {"relevance", "title"} and order is None:
+            raise ValueError("Unsupported book sort.")
 
         if not expression:
-            sql = "SELECT * FROM books WHERE root = ?"
+            sql = "SELECT b.* FROM books b WHERE root = ?"
             parameters: list[Any] = [root_key]
             if wanted:
                 sql += f" AND ext IN ({','.join('?' * len(wanted))})"
                 parameters.extend(wanted)
-            sql += " ORDER BY title COLLATE NOCASE, name COLLATE NOCASE LIMIT ? OFFSET ?"
+            sql += date_sql
+            parameters.extend(date_params)
+            sql += " ORDER BY " + (order or "title COLLATE NOCASE, name COLLATE NOCASE,b.id") + " LIMIT ? OFFSET ?"
             parameters.extend([limit, offset])
             return [self._row(row) for row in self.connection.execute(sql, parameters)]
 
-        sql, parameters = self._match_sql(root_key, expression, mode, wanted)
+        sql, parameters = self._match_sql(root_key, expression, mode, wanted,
+                                          date_filters=date_filters, sort=sort)
         sql += " LIMIT ? OFFSET ?"
         parameters.extend([limit, offset])
         try:
@@ -1211,20 +1256,25 @@ class LibraryIndex:
         *,
         mode: str = "meta",
         extensions: Sequence[str] | None = None,
+        date_filters: dict[str, str] | None = None,
     ) -> int:
         root_key = normalize_root(root)
         expression, parsed_extensions = build_match_expression(query)
         wanted = list(extensions or []) + parsed_extensions
 
         if not expression:
-            sql = "SELECT COUNT(*) FROM books WHERE root = ?"
+            sql = "SELECT COUNT(*) FROM books b WHERE root = ?"
             parameters: list[Any] = [root_key]
             if wanted:
                 sql += f" AND ext IN ({','.join('?' * len(wanted))})"
                 parameters.extend(wanted)
+            date_sql, date_params = date_predicate(date_filters)
+            sql += date_sql
+            parameters.extend(date_params)
             return int(self.connection.execute(sql, parameters).fetchone()[0])
 
-        sql, parameters = self._match_sql(root_key, expression, mode, wanted, counting=True)
+        sql, parameters = self._match_sql(root_key, expression, mode, wanted, counting=True,
+                                          date_filters=date_filters)
         try:
             return int(self.connection.execute(sql, parameters).fetchone()[0])
         except sqlite3.OperationalError:
@@ -1237,6 +1287,8 @@ class LibraryIndex:
         mode: str,
         extensions: Sequence[str],
         counting: bool = False,
+        date_filters: dict[str, str] | None = None,
+        sort: str = "relevance",
     ) -> tuple[str, list[Any]]:
         """Build the FTS-joined query for *mode*.
 
@@ -1277,11 +1329,19 @@ class LibraryIndex:
         if extensions:
             sql += f" AND b.ext IN ({','.join('?' * len(extensions))})"
             parameters.extend(extensions)
+        date_sql, date_params = date_predicate(date_filters)
+        sql += date_sql
+        parameters.extend(date_params)
         if not counting:
-            sql += " ORDER BY bm25(books_fts)" if mode == "meta" else (
-                " ORDER BY bm25(content_fts)" if mode == "content"
-                else " ORDER BY b.title COLLATE NOCASE"
-            )
+            order = date_order(sort)
+            if order is None:
+                if sort == "title" or mode == "all":
+                    order = "b.title COLLATE NOCASE,b.id"
+                elif mode == "content":
+                    order = "bm25(content_fts),b.id"
+                else:
+                    order = "bm25(books_fts),b.id"
+            sql += " ORDER BY " + order
         return sql, parameters
 
     @staticmethod
@@ -1299,6 +1359,10 @@ class LibraryIndex:
             subjects=row["subjects"],
             pages=row["pages"],
             snippet=(row["snippet"] if "snippet" in keys else "") or "",
+            published_date=row["published_date"] or "",
+            publication_source=row["publication_source"] or "",
+            created_ns=row["created_ns"], mtime_ns=row["mtime_ns"],
+            date_metadata_version=row["date_metadata_version"],
         )
 
 

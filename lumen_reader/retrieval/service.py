@@ -19,6 +19,7 @@ from .. import accel
 from ..passage_index import corpus_revision, passage_schema_available
 from ..runtime_paths import RuntimePaths
 from ..version import get_version
+from ..book_dates import DATE_METADATA_VERSION, date_fields, date_order, date_predicate
 from .citations import CitationCodec
 from .contracts import BackendReport, RetrievalError, RootScope, SCHEMA_VERSION
 from .cursors import CursorCodec
@@ -123,6 +124,19 @@ class RetrievalService:
                 "query_only": True,
                 "passage_schema_version": 1 if passage_schema else 0,
             })
+            date_columns = {row[1] for row in connection.execute("PRAGMA table_info(books)")}
+            dates_ready = "date_metadata_version" in date_columns
+            dated = int(connection.execute(
+                "SELECT COUNT(*) FROM books WHERE date_metadata_version>=?", (DATE_METADATA_VERSION,)
+            ).fetchone()[0]) if dates_ready else 0
+            base["catalog"]["dates"] = {
+                "schema_available": dates_ready, "indexed_books": dated,
+                "pending_books": book_count - dated,
+                "filter_fields": ["published_from", "published_to", "created_from", "created_to", "modified_from", "modified_to"],
+                "file_filter_timezone": "UTC",
+            }
+            if dated < book_count:
+                base["warnings"].append("Run a library sweep to backfill date metadata; existing text remains searchable.")
             base["corpus"] = {
                 "corpus_revision": corpus_revision(connection) if passage_count else 0,
                 "books": book_count,
@@ -205,6 +219,7 @@ class RetrievalService:
         case_sensitive: str | bool = "auto",
         include_sections: bool = False,
         sort: str = "path",
+        date_filters: dict[str, str] | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
@@ -221,23 +236,27 @@ class RetrievalService:
         matcher = compile_glob(pattern, case_sensitive=sensitive)
         format_values = _formats(formats)
         with self.pool.connection() as connection:
+            dates = _date_query(connection, date_filters, sort)
             selected = self._select_roots(connection, roots)
             ready = self._passage_index_ready(connection)
             revision = corpus_revision(connection) if ready else 0
             digest = _query_digest({
                 "pattern": pattern, "target": target, "roots": roots,
                 "formats": format_values, "case": case_token, "sections": include_sections,
-                "sort": sort,
+                "sort": sort, "date_filters": date_filters,
             })
             root_digest = _root_digest(selected)
             offset = self._cursor_offset(cursor, "lumen_glob", digest, revision, root_digest)
             rows = self._glob_candidates(
                 connection, selected, pattern, target, format_values, sort, offset,
                 passage_ready=ready,
+                dates=dates,
             )
             hits: list[dict[str, Any]] = []
             root_by_path = {root.path: root for root in selected}
+            consumed = 0
             for row in rows:
+                consumed += 1
                 value, relative = self._glob_value(row, target)
                 if not matcher.fullmatch(value):
                     continue
@@ -258,6 +277,7 @@ class RetrievalService:
                     "publisher": str(row["publisher"]),
                     "size_bytes": int(row["size"]),
                     "modified_ns": int(row["mtime_ns"]),
+                    **date_fields(row),
                     "coverage": str(row["coverage"] or "metadata_only"),
                     "matched_value": value,
                 })
@@ -270,7 +290,7 @@ class RetrievalService:
                 )
             elif include_sections and len(hits) < limit:
                 section_rows = self._glob_section_candidates(
-                    connection, selected, format_values, offset=offset
+                    connection, selected, format_values, offset=offset, dates=dates, sort=sort,
                 )
                 for row in section_rows:
                     matched_value = next(
@@ -299,6 +319,7 @@ class RetrievalService:
                         "publisher": str(row["publisher"]),
                         "size_bytes": int(row["size"]),
                         "modified_ns": int(row["mtime_ns"]),
+                        **date_fields(row),
                         "coverage": str(row["coverage"]),
                         "matched_value": matched_value,
                         "match_kind": "section",
@@ -311,10 +332,10 @@ class RetrievalService:
                     if len(hits) >= limit:
                         break
             next_cursor = None
-            if len(rows) >= min(10_000, max(limit * 20, 500)):
+            if consumed < len(rows) or len(rows) >= min(10_000, max(500, MAX_LIMIT * 20)):
                 next_cursor = self.cursors.encode(
                     operation="lumen_glob", query_digest=digest, corpus_revision=revision,
-                    root_digest=root_digest, offset=offset + len(rows),
+                    root_digest=root_digest, offset=offset + consumed,
                 )
             return {
                 "schema_version": SCHEMA_VERSION,
@@ -346,6 +367,7 @@ class RetrievalService:
         excerpt_chars: int = 700,
         cursor: str | None = None,
         _expression: str | None = None,
+        date_filters: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         limit = _limit(limit, 20)
@@ -378,13 +400,15 @@ class RetrievalService:
                 "query": query, "expression": expression, "strategy": strategy,
                 "roots": roots, "formats": format_values,
                 "languages": language_values, "books": book_values, "diversity": diversity,
-                "max_per_book": max_per_book, "coverage": coverage,
+                "max_per_book": max_per_book, "coverage": coverage, "date_filters": date_filters,
             })
             root_digest = _root_digest(selected)
             offset = self._cursor_offset(cursor, "lumen_search", digest, revision, root_digest)
+            dates = _date_query(connection, date_filters)
             raw_rows = self._passage_search_rows(
                 connection, expression, selected, format_values, language_values, book_values,
                 coverage, max(limit * 8, 80), offset,
+                dates=dates,
             ) if ready else []
             hits: list[dict[str, Any]] = []
             per_book: dict[int, int] = defaultdict(int)
@@ -405,6 +429,8 @@ class RetrievalService:
                 bootstrap = self._bootstrap_search_rows(
                     connection, expression, selected, format_values, book_values,
                     max(limit * 4, 40), offset,
+                    dates=dates,
+                    languages=language_values,
                 )
                 for row in bootstrap[:limit]:
                     hits.append(self._bootstrap_hit(row, len(hits) + 1, excerpt_chars))
@@ -455,6 +481,7 @@ class RetrievalService:
         max_matches_per_book: int = 3,
         context_chars: int = 480,
         fallback: str = "none",
+        date_filters: dict[str, str] | None = None,
         limit: int = 30,
         cursor: str | None = None,
     ) -> dict[str, Any]:
@@ -507,13 +534,14 @@ class RetrievalService:
             digest = _query_digest({
                 "query": query, "mode": effective_mode, "case": case_sensitive,
                 "word": whole_word, "roots": roots, "books": book_values,
-                "formats": format_values,
+                "formats": format_values, "date_filters": date_filters,
             })
             root_digest = _root_digest(selected)
             offset = self._cursor_offset(cursor, "lumen_grep", digest, revision, root_digest)
             candidates = self._grep_candidates(
                 connection, expression, selected, format_values, book_values,
                 ready=ready, offset=offset,
+                dates=_date_query(connection, date_filters),
             )
             hits: list[dict[str, Any]] = []
             per_book: dict[int, int] = defaultdict(int)
@@ -843,12 +871,23 @@ class RetrievalService:
                 ]
             return result
 
-    def explain_query(self, operation: str, query: str, strategy: str = "auto") -> dict[str, Any]:
+    def explain_query(self, operation: str, query: str, strategy: str = "auto",
+                      date_filters: dict[str, str] | None = None) -> dict[str, Any]:
+        try:
+            date_predicate(date_filters)
+        except ValueError as exception:
+            raise RetrievalError("INVALID_ARGUMENT", str(exception), retryable=False) from exception
+        plan = explain_plan(operation, query, strategy)
+        plan["date_filters"] = dict(date_filters or {})
+        plan["date_filter_stage"] = "SQLite catalog predicates before candidate limits"
+        plan["date_filter_timezone"] = "UTC"
+        plan["publication_range_semantics"] = "overlap with known year/month/day precision"
+        plan["date_index_checked"] = False
         return {
             "schema_version": SCHEMA_VERSION,
             "operation": "lumen_explain_query",
             "request_id": _request_id(),
-            "plan": explain_plan(operation, query, strategy),
+            "plan": plan,
             "limits": {
                 "results": MAX_LIMIT,
                 "excerpt_chars": MAX_EXCERPT,
@@ -983,6 +1022,7 @@ class RetrievalService:
         offset: int,
         *,
         passage_ready: bool,
+        dates: tuple[str, list[Any]] = ("", []),
     ) -> list[sqlite3.Row]:
         sql = (
             "SELECT b.*,COALESCE(d.coverage,'metadata_only') AS coverage"
@@ -993,13 +1033,15 @@ class RetrievalService:
         parameters: list[Any] = []
         sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
         sql, parameters = _add_in(sql, parameters, "b.ext", formats)
+        sql += dates[0]
+        parameters.extend(dates[1])
         prefix = fixed_prefix(pattern)
         column = {"filename": "b.name", "title": "b.title", "author": "b.author",
                   "subject": "b.subjects", "publisher": "b.publisher"}.get(target)
         if prefix and column:
             sql += f" AND {column} LIKE ? ESCAPE '\\'"
             parameters.append(_like_escape(prefix) + "%")
-        order = {
+        order = date_order(sort) or {
             "title": "b.title COLLATE NOCASE,b.id",
             "modified": "b.mtime_ns DESC,b.id",
             "size": "b.size DESC,b.id",
@@ -1016,6 +1058,8 @@ class RetrievalService:
         formats: Sequence[str],
         *,
         offset: int,
+        dates: tuple[str, list[Any]] = ("", []),
+        sort: str = "path",
     ) -> list[sqlite3.Row]:
         sql = (
             "SELECT b.id AS book_id,b.*,d.coverage,s.ordinal AS section_ordinal,"
@@ -1026,7 +1070,9 @@ class RetrievalService:
         parameters: list[Any] = []
         sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
         sql, parameters = _add_in(sql, parameters, "b.ext", formats)
-        sql += " ORDER BY b.path COLLATE NOCASE,s.ordinal LIMIT 10000 OFFSET ?"
+        sql += dates[0]
+        parameters.extend(dates[1])
+        sql += " ORDER BY " + (date_order(sort) or "b.path COLLATE NOCASE,b.id") + ",s.ordinal LIMIT 10000 OFFSET ?"
         parameters.append(max(0, int(offset)))
         return list(connection.execute(sql, parameters))
 
@@ -1089,6 +1135,7 @@ class RetrievalService:
         coverage: str,
         limit: int,
         offset: int,
+        dates: tuple[str, list[Any]] = ("", []),
     ) -> list[sqlite3.Row]:
         sql = self._passage_select_sql(ranked=True) + (
             " WHERE rag_passages_fts MATCH ? AND d.active_revision=p.revision"
@@ -1100,6 +1147,8 @@ class RetrievalService:
         sql, parameters = _add_in(sql, parameters, "b.id", book_ids)
         if coverage == "complete_only":
             sql += " AND d.coverage='complete'"
+        sql += dates[0]
+        parameters.extend(dates[1])
         sql += " ORDER BY rank,p.id LIMIT ? OFFSET ?"
         parameters.extend([min(1000, int(limit)), max(0, int(offset))])
         try:
@@ -1117,6 +1166,7 @@ class RetrievalService:
         *,
         ready: bool,
         offset: int,
+        dates: tuple[str, list[Any]] = ("", []),
     ) -> list[sqlite3.Row]:
         parameters: list[Any] = []
         if ready:
@@ -1127,6 +1177,8 @@ class RetrievalService:
             sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
             sql, parameters = _add_in(sql, parameters, "b.ext", formats)
             sql, parameters = _add_in(sql, parameters, "b.id", book_ids)
+            sql += dates[0]
+            parameters.extend(dates[1])
             sql += " ORDER BY p.id LIMIT ? OFFSET ?"
             parameters.extend([MAX_REGEX_CANDIDATES, max(0, int(offset))])
             try:
@@ -1147,6 +1199,8 @@ class RetrievalService:
         sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
         sql, parameters = _add_in(sql, parameters, "b.ext", formats)
         sql, parameters = _add_in(sql, parameters, "b.id", book_ids)
+        sql += dates[0]
+        parameters.extend(dates[1])
         sql += " ORDER BY b.id LIMIT ? OFFSET ?"
         parameters.extend([MAX_REGEX_CANDIDATES, max(0, int(offset))])
         return list(connection.execute(sql, parameters))
@@ -1160,6 +1214,8 @@ class RetrievalService:
         book_ids: Sequence[int],
         limit: int,
         offset: int,
+        dates: tuple[str, list[Any]] = ("", []),
+        languages: Sequence[str] = (),
     ) -> list[sqlite3.Row]:
         sql = (
             "SELECT b.id AS book_id,b.*,content_fts.body AS body,"
@@ -1171,6 +1227,9 @@ class RetrievalService:
         sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
         sql, parameters = _add_in(sql, parameters, "b.ext", formats)
         sql, parameters = _add_in(sql, parameters, "b.id", book_ids)
+        sql, parameters = _add_in(sql, parameters, "LOWER(b.language)", languages)
+        sql += dates[0]
+        parameters.extend(dates[1])
         sql += " ORDER BY rank,b.id LIMIT ? OFFSET ?"
         parameters.extend([min(1000, int(limit)), max(0, int(offset))])
         try:
@@ -1350,6 +1409,7 @@ class RetrievalService:
             "name": str(row["name"]),
             "size_bytes": int(row["size"]),
             "modified_ns": int(row["mtime_ns"]),
+            **date_fields(row),
             "pages": int(row["pages"]),
             "readable": bool(row["ok"]),
             "error": str(row["error"]),
@@ -1421,6 +1481,21 @@ class RetrievalService:
             "hits": hits,
             "next_cursor": None,
         }
+
+
+def _date_query(connection: sqlite3.Connection, filters: dict[str, str] | None,
+                sort: str = "path") -> tuple[str, list[Any]]:
+    try:
+        predicate = date_predicate(filters)
+    except ValueError as exception:
+        raise RetrievalError("INVALID_ARGUMENT", str(exception), retryable=False) from exception
+    if sort not in {"path", "title", "size"} and date_order(sort) is None:
+        raise RetrievalError("INVALID_ARGUMENT", "Unsupported date/catalog sort.", retryable=False)
+    needs_dates = any(key.startswith(("published_", "created_")) for key in (filters or {})) or sort.startswith(("published", "created"))
+    if needs_dates and "created_ns" not in {row[1] for row in connection.execute("PRAGMA table_info(books)")}:
+        raise RetrievalError("DATE_INDEX_REQUIRED", "This index predates book dates.",
+                             suggested_action="Open the updated Lumen and run a library sweep.")
+    return predicate
 
 
 def _add_in(

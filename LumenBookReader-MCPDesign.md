@@ -35,6 +35,42 @@ The phrase **infinite RAG** is used here as a product metaphor, not a claim that
 
 ## 1. Executive decision
 
+### Implemented date extension — 2026-09-23
+
+The additive catalog design and callable date contract are specified in
+[BookDates.md](BookDates.md) and [LumenBookReader-Spec.md](LumenBookReader-Spec.md).
+The GUI and MCP share `book_dates.py` normalization and bound SQL predicates.
+Filesystem birth/modification timestamps remain separate from publication
+metadata. Precision-preserving publication intervals and birth nanoseconds are
+added to `books`, with root-scoped B-tree indexes. The single sweep writer
+backfills unchanged books with zero text budget, preserving FTS/passage rows.
+The MCP remains query-only: it reports pending date coverage and rejects new
+publication/birth operations on an unmigrated schema with `DATE_INDEX_REQUIRED`.
+
+```mermaid
+sequenceDiagram
+    participant UI as Visible Lumen shelf
+    participant W as Sweep worker / single writer
+    participant DB as SQLite catalog + date indexes
+    participant MCP as MCP read-only service
+    participant AI as Tlamatini
+    UI->>W: Normal sweep
+    W->>DB: Add date metadata (unchanged text preserved)
+    UI->>DB: Sort/filter dates before paging
+    AI->>MCP: glob/search/grep + date_filters
+    MCP->>DB: Bound range predicates before candidate limits
+    DB-->>MCP: Matching rows + original date precision/provenance
+    MCP-->>AI: Structured book dates, excerpts, existing citations
+```
+
+No additional GPU/DirectStorage/OCR/LLM backend or dependency is introduced.
+The shipped scanner remains CPU-executed, with an explicit guard against
+mislabeling registered-but-unwired GPU candidates. Date filtering uses the same
+SQLite predicates on GPU-equipped and CPU-only machines. The hardware/fallback
+matrix and GPU result-contract obligations are in BookDates.md.
+`LumenBookReader.json` continues to describe transport/process launch only;
+the running server advertises the new optional arguments through discovery.
+
 The strongest implementation is a **separate, local-first, read-mostly MCP server** that shares Lumen's durable SQLite catalog but does not run inside the Qt UI process.
 
 | Decision | Selected design | Why this is the default |
@@ -1359,7 +1395,8 @@ Input:
 | `target` | `path`, `filename`, `title`, `author`, `subject`, `publisher`, `any_metadata` | `path` default |
 | `case_sensitive` | `auto`, `true`, `false` | `auto` follows source identity policy |
 | `include_sections` | boolean | Allows matching section headings/hrefs after passage index exists |
-| `sort` | `path`, `title`, `modified`, `size` | Stable book-ID tiebreaker |
+| `sort` | `path`, `title`, `size`; `published`, `created`, `modified` plus `_asc`/`_desc` variants | Stable book-ID tiebreaker; unknown dates last |
+| `date_filters` | Optional string-valued object with published/created/modified `_from` / `_to` keys | Shared inclusive contract in BookDates.md; also available on search and grep |
 
 Output hit adds metadata, relative path, source size/mtime, coverage, and `lumen://book/{id}`. It never returns body excerpts unless `include_sections=true` and the target is a section field.
 

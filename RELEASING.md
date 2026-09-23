@@ -21,6 +21,24 @@ subsystems with their own design documents, see
 
 ## The one-liners
 
+### Date-column feature release checks
+
+Before distributing a build with [book dates](BookDates.md), run
+`.venv-release\Scripts\python.exe tools\validate_book_dates.py` on a visible
+desktop. It verifies migration/backfill preservation, real MCP arguments and
+native shelf/reader interactions. Do not select offscreen/minimal Qt platforms.
+The runner also checks GPU/DirectStorage/NVMe capability combinations with real
+CPU sweep/backfill work; simulated hardware is not a claim of GPU execution.
+Both `Lumen.exe` and `LumenMCP.exe` must contain the updated sources; the launcher
+JSON format itself is unchanged. A source edit does not update an installed binary.
+
+On first launch, the reader adds catalog columns/indexes; the next normal sweep
+populates birth/publication metadata without rebuilding unchanged full-text or
+passage indexes. Include this migration note in release instructions: unknown
+publication remains unknown when the book has no usable release metadata.
+MCP-only clients must open the upgraded reader and sweep to upgrade old indexes,
+then reconnect for new tool discovery. Keep user books, state and notes intact.
+
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |

@@ -35,6 +35,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -44,17 +45,21 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from .library_index import BookRow, LibraryCounts, LibraryIndex
 from .turbo_scan import ScanSnapshot
+from .book_dates import date_predicate, timestamp_text
 
 PAGE_SIZE = 400
 SEARCH_DEBOUNCE_MS = 140
 ROW_HEIGHT = 74
 ROW_HEIGHT_SNIPPET = 96
+DATE_COLUMN_WIDTH = 132
+DATE_STACK_THRESHOLD = 850
 
 
 #: 1 typographic point is 4/3 of a pixel at Qt's 96-DPI logical resolution.
@@ -189,6 +194,8 @@ class LibraryModel(QAbstractListModel):
         self._mode = "meta"
         self._extensions: list[str] = []
         self._fallback: list[BookRow] = []
+        self._sort = "relevance"
+        self._date_filters: dict[str, str] = {}
 
     # ── query state ────────────────────────────────────────────────────────
 
@@ -216,6 +223,15 @@ class LibraryModel(QAbstractListModel):
         self._extensions = extensions
         self.refresh()
 
+    def set_dates(self, filters: dict[str, str]) -> None:
+        date_predicate(filters)
+        self._date_filters = dict(filters)
+        self.refresh()
+
+    def set_sort(self, sort: str) -> None:
+        self._sort = sort
+        self.refresh()
+
     @property
     def mode(self) -> str:
         return self._mode
@@ -227,16 +243,18 @@ class LibraryModel(QAbstractListModel):
     def refresh(self) -> None:
         try:
             self._total = self.library.count_matching(
-                self.root, self._query, mode=self._mode, extensions=self._extensions
+                self.root, self._query, mode=self._mode, extensions=self._extensions,
+                date_filters=self._date_filters,
             )
             page = self.library.search(
                 self.root, self._query, mode=self._mode,
                 limit=self.page_size, offset=0, extensions=self._extensions,
+                date_filters=self._date_filters, sort=self._sort,
             )
         except Exception:
             self._total, page = 0, []
 
-        if not self._total and self._fallback and not self._query:
+        if not self._total and self._fallback and not self._query and not self._date_filters:
             page = list(self._fallback)
             self._total = len(page)
 
@@ -260,6 +278,7 @@ class LibraryModel(QAbstractListModel):
             more = self.library.search(
                 self.root, self._query, mode=self._mode,
                 limit=self.page_size, offset=len(self._rows), extensions=self._extensions,
+                date_filters=self._date_filters, sort=self._sort,
             )
         except Exception:
             return
@@ -282,8 +301,13 @@ class LibraryModel(QAbstractListModel):
             return row.path
         if role == self.RowRole:
             return row
-        if role == Qt.ItemDataRole.ToolTipRole:
+        if role in (Qt.ItemDataRole.ToolTipRole, Qt.ItemDataRole.AccessibleTextRole):
             lines = [row.title, row.author, row.path]
+            lines.extend([
+                f"Published: {row.published_date or 'Unknown'} ({row.publication_source or 'no publication metadata'})",
+                f"File created: {timestamp_text(row.created_ns, local=True) or 'Unknown'} (local time)",
+                f"File modified: {timestamp_text(row.mtime_ns, local=True) or 'Unknown'} (local time)",
+            ])
             if row.subjects:
                 lines.append(f"Topics: {row.subjects}")
             if row.pages:
@@ -311,6 +335,7 @@ class BookDelegate(QStyledItemDelegate):
             "hover": "#202837",
         }
         self.root = ""
+        self.stacked_dates = False
 
     def set_palette(self, colors: dict[str, str]) -> None:
         self.colors = dict(colors)
@@ -321,7 +346,7 @@ class BookDelegate(QStyledItemDelegate):
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         row = index.data(LibraryModel.RowRole)
         tall = bool(row and row.snippet)
-        return QSize(0, ROW_HEIGHT_SNIPPET if tall else ROW_HEIGHT)
+        return QSize(0, (ROW_HEIGHT_SNIPPET if tall else ROW_HEIGHT) + (58 if self.stacked_dates else 0))
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         row: BookRow | None = index.data(LibraryModel.RowRole)
@@ -357,6 +382,9 @@ class BookDelegate(QStyledItemDelegate):
 
         text_left = badge.right() + 14
         text_width = rect.right() - text_left - 12
+        if not self.stacked_dates:
+            text_width -= DATE_COLUMN_WIDTH * 3 + 16
+        text_width = max(1, text_width)
 
         # Title
         title_font = scaled_font(option.font, 1.0)
@@ -421,6 +449,28 @@ class BookDelegate(QStyledItemDelegate):
                 ),
             )
 
+        # Three real, aligned date columns; narrow windows put the same columns
+        # below the identity so the original path never competes with dates.
+        cell_width = (rect.width() - 24) // 3 if self.stacked_dates else DATE_COLUMN_WIDTH
+        start = rect.left() + 12 if self.stacked_dates else rect.right() - 12 - 3 * cell_width
+        top = rect.bottom() - 51 if self.stacked_dates else rect.top() + 15
+        created = timestamp_text(row.created_ns, local=True)
+        modified = timestamp_text(row.mtime_ns, local=True)
+        values = [
+            (row.published_date or "Unknown", {4: "year only", 7: "month precision", 10: "publication date"}.get(len(row.published_date), "not supplied")),
+            (created[:10] if created else "Unknown", created[11:] + " · local" if created else "unavailable"),
+            (modified[:10] if modified else "Unknown", modified[11:] + " · local" if modified else "unavailable"),
+        ]
+        for column, (value, detail) in enumerate(values):
+            cell = QRect(start + column * cell_width, top, cell_width, 24)
+            painter.setPen(QColor(colors["line"]))
+            painter.drawLine(cell.left(), cell.top(), cell.left(), cell.bottom() + 20)
+            painter.setFont(detail_font)
+            painter.setPen(QColor(colors["accent"] if column == 0 and row.published_date else colors["fg"]))
+            painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, value)
+            painter.setFont(scaled_font(option.font, -2))
+            painter.setPen(QColor(colors["muted"]))
+            painter.drawText(cell.translated(0, 22), Qt.AlignmentFlag.AlignCenter, detail)
         painter.restore()
 
 
@@ -444,6 +494,12 @@ class BookListView(QListView):
         | Qt.KeyboardModifier.AltModifier
         | Qt.KeyboardModifier.MetaModifier
     )
+
+    viewport_resized = Signal()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.viewport_resized.emit()
 
     def keyboardSearch(self, search: str) -> None:  # noqa: N802 - Qt's name
         """Disabled: the search box is the only place typing goes."""
@@ -502,6 +558,8 @@ class LibraryShelf(QWidget):
         root_row.addWidget(root_caption)
         self.root_label = QLabel(root)
         self.root_label.setObjectName("rootPath")
+        self.root_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.root_label.setToolTip(root)
         self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root_row.addWidget(self.root_label, 1)
         self.configure_button = QPushButton("⚙  Change folder && settings")
@@ -566,6 +624,56 @@ class LibraryShelf(QWidget):
         chip_row.addWidget(self.status)
         root_layout.addLayout(chip_row)
 
+        # Optional range controls use the same validated contract as MCP.
+        date_row = QHBoxLayout()
+        self.date_field = QComboBox()
+        self.date_field.setObjectName("dateField")
+        for label, key in (("Published", "published"), ("File created (UTC)", "created"), ("File modified (UTC)", "modified")):
+            self.date_field.addItem(label, key)
+        self.date_field.setAccessibleName("Date filter field")
+        self.date_from = QLineEdit()
+        self.date_to = QLineEdit()
+        for edit, label in ((self.date_from, "From"), (self.date_to, "Through")):
+            edit.setObjectName("dateInput")
+            edit.setPlaceholderText(label + " · YYYY-MM-DD")
+            edit.setAccessibleName(label + " date")
+            edit.setFixedWidth(180)
+            edit.setToolTip("Publication: YYYY, YYYY-MM or YYYY-MM-DD. File dates: UTC day or ISO datetime with timezone.")
+            edit.returnPressed.connect(self._apply_dates)
+        self.date_apply = QPushButton("Apply dates")
+        self.date_apply.setObjectName("smallButton")
+        self.date_apply.clicked.connect(self._apply_dates)
+        self.date_clear = QPushButton("Clear dates")
+        self.date_clear.setObjectName("smallButton")
+        self.date_clear.clicked.connect(self._clear_dates)
+        for widget in (self.date_field, self.date_from, self.date_to, self.date_apply, self.date_clear):
+            date_row.addWidget(widget)
+        date_row.addStretch(1)
+        root_layout.addLayout(date_row)
+        self.date_feedback = QLabel("File dates shown in local time · filters use UTC · publication dates may be unknown")
+        self.date_feedback.setWordWrap(True)
+        self.date_feedback.setObjectName("shelfStatus")
+        root_layout.addWidget(self.date_feedback)
+
+        self.date_header = QWidget()
+        self.date_header_layout = QHBoxLayout(self.date_header)
+        self.date_header_layout.setContentsMargins(15, 0, 15, 0)
+        self.date_header_layout.setSpacing(0)
+        self.identity_header = QPushButton("BOOK / ORIGINAL FILE  ↕")
+        self.identity_header.setObjectName("dateHeader")
+        self.identity_header.clicked.connect(lambda: self._sort_dates("title"))
+        self.date_header_layout.addWidget(self.identity_header, 1)
+        self.date_headers = []
+        for label, key in (("PUBLISHED", "published"), ("FILE CREATED", "created"), ("FILE MODIFIED", "modified")):
+            button = QPushButton(label + "  ↕")
+            button.setObjectName("dateHeader")
+            button.setAccessibleName("Sort by " + label.lower())
+            button.setToolTip("Click for newest first; click again for oldest first. Unknown dates stay last.")
+            button.clicked.connect(lambda _checked=False, field=key: self._sort_dates(field))
+            self.date_headers.append((button, label, key))
+            self.date_header_layout.addWidget(button)
+        root_layout.addWidget(self.date_header)
+
         # ── the virtualized list ───────────────────────────────────────────
         self.model = LibraryModel(index, root, self)
         self.model.countsChanged.connect(self._on_counts_changed)
@@ -580,6 +688,7 @@ class LibraryShelf(QWidget):
         self.view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setResizeMode(QListView.ResizeMode.Adjust)
+        self.view.viewport_resized.connect(self._layout_date_columns)
         self.view.doubleClicked.connect(self._activate)
         self.view.activated.connect(self._activate)
         self.view.typed.connect(self.type_into_search)
@@ -621,6 +730,41 @@ class LibraryShelf(QWidget):
         self.delegate.set_root(root)
         self.search.setFocus()
         self.refresh_counts()
+
+    def _layout_date_columns(self) -> None:
+        stacked = self.view.viewport().width() - 6 < DATE_STACK_THRESHOLD
+        if self.delegate.stacked_dates != stacked:
+            self.delegate.stacked_dates = stacked
+            self.view.doItemsLayout()
+        self.identity_header.setVisible(not stacked)
+        for button, _label, _key in self.date_headers:
+            button.setFixedWidth(max(80, (self.view.viewport().width() - 30) // 3) if stacked else DATE_COLUMN_WIDTH)
+        gutter = self.view.width() - self.view.viewport().width()
+        self.date_header_layout.setContentsMargins(15, 0, 15 + gutter, 0)
+        self.view.viewport().update()
+
+    def _sort_dates(self, field: str) -> None:
+        sort = field + "_asc" if field != "title" and self.model._sort == field else field
+        self.model.set_sort(sort)
+        for button, label, key in self.date_headers:
+            button.setText(label + ("  ↑" if sort == key + "_asc" else "  ↓" if sort == key else "  ↕"))
+
+    def _apply_dates(self) -> None:
+        field = self.date_field.currentData()
+        filters = {field + "_" + end: edit.text().strip()
+                   for end, edit in (("from", self.date_from), ("to", self.date_to)) if edit.text().strip()}
+        try:
+            self.model.set_dates(filters)
+        except ValueError as exception:
+            self.date_feedback.setText(str(exception))
+            return
+        self.date_feedback.setText("Active: " + (" · ".join(f"{key}={value}" for key, value in filters.items()) or "all dates"))
+
+    def _clear_dates(self) -> None:
+        self.date_from.clear()
+        self.date_to.clear()
+        self.model.set_dates({})
+        self.date_feedback.setText("All dates · file dates shown in local time; filters use UTC")
 
     def showEvent(self, event) -> None:
         """The reader should be able to simply start typing.
@@ -698,6 +842,7 @@ class LibraryShelf(QWidget):
     def set_root(self, root: str) -> None:
         self.root = root
         self.root_label.setText(root)
+        self.root_label.setToolTip(root)
         self.delegate.set_root(root)
         self.model.set_root(root)
         self.refresh_counts()
@@ -867,6 +1012,11 @@ class LibraryShelf(QWidget):
                             border: 1px solid {colors['line']}; border-radius: 10px;
                             padding: 11px 13px; font-size: 14px; }}
             #shelfSearch:focus {{ border-color: {colors['accent']}; }}
+            #dateInput, #dateField {{ color: {colors['fg']}; background: {colors['panel']};
+                border: 1px solid {colors['line']}; border-radius: 7px; padding: 5px 8px; }}
+            #dateHeader {{ color: {colors['muted']}; background: transparent;
+                border: none; padding: 6px 0; font-size: 10px; font-weight: 700; }}
+            #dateHeader:hover {{ color: {colors['accent']}; }}
             #shelfList {{ background: {colors['panel']}; border: 1px solid {colors['line']};
                           border-radius: 13px; padding: 6px; outline: none; }}
             #chip {{ color: {colors['muted']}; background: transparent;

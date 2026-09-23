@@ -3,8 +3,9 @@
 Angela's requirement is that Lumen must never need two versions - the same code
 has to run on a workstation with an RTX card and on a laptop with no GPU stack
 at all, choosing for itself.  These tests pin that both ways round by faking the
-hardware, so the GPU path is exercised on a machine that has no GPU and the
-CPU path is exercised on a machine that does.
+hardware, so candidate selection is checked on either kind of machine. These
+tests do not execute GPU kernels; test_date_backends covers the actual CPU
+sweep executor and its fallback guard.
 """
 
 from __future__ import annotations
@@ -121,13 +122,13 @@ def test_hardware_alone_is_not_enough_without_a_kernel(
     assert resolve_extraction_backend(AUTO)[0] == CPU_FLEET
 
 
-def test_registering_a_kernel_switches_the_whole_application_over(
+def test_registering_a_kernel_selects_a_capability_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The seam must actually be wired, not merely documented.
+    """Registration changes capability selection, not actual GPU execution.
 
-    Registering a backend is the single change that shipping a GPU path needs -
-    no second build, no edits above this module.  This proves that by doing it.
+    The scanner still needs a queue/result adapter; test_date_backends proves
+    that an unwired candidate cannot mislabel a CPU sweep as GPU work.
     """
     pretend(monkeypatch, gpu=True, dstorage=True, nvme=True)
     monkeypatch.setitem(accel._extraction_implementations, GPU_DIRECTSTORAGE, object)
@@ -168,7 +169,8 @@ def test_a_gpu_search_backend_reports_its_vram(monkeypatch: pytest.MonkeyPatch) 
     ok, why = search_backend_status(GPU_RESIDENT)
     assert not ok            # no kernel registered yet, and it says so
     assert "32 GB VRAM" in why
-    assert "register_search_backend" in why
+    assert "query adapter" in why
+    assert "SQLite FTS5 remains available" in why
 
 
 def test_choose_backends_reports_a_downgrade_rather_than_hiding_it(

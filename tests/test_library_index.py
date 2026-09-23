@@ -31,6 +31,7 @@ OPF = """<?xml version="1.0"?>
     <dc:publisher>{publisher}</dc:publisher>
     <dc:language>en</dc:language>
     {subjects}
+    {published}
   </metadata>
   <manifest>
     <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
@@ -53,6 +54,7 @@ def make_epub(
     body: str = "ordinary prose",
     publisher: str = "A Press",
     subjects: list[str] | None = None,
+    published: str = "",
 ) -> Path:
     tags = "".join(f"<dc:subject>{s}</dc:subject>" for s in (subjects or []))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +63,8 @@ def make_epub(
         archive.writestr("META-INF/container.xml", CONTAINER)
         archive.writestr(
             "OEBPS/content.opf",
-            OPF.format(title=title, author=author, publisher=publisher, subjects=tags),
+            OPF.format(title=title, author=author, publisher=publisher, subjects=tags,
+                       published=f"<dc:date>{published}</dc:date>" if published else ""),
         )
         archive.writestr("OEBPS/c1.xhtml", CHAPTER.format(body=body))
     return path

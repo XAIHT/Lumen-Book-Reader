@@ -9,6 +9,13 @@ from ..retrieval.contracts import RetrievalError
 from ..retrieval.service import RetrievalService
 from .compat import READ_ONLY, error_result
 
+DATE_HELP = (
+    " date_filters optionally ANDs published_from/published_to (YYYY, YYYY-MM or YYYY-MM-DD), "
+    "created_from/created_to and modified_from/modified_to (YYYY-MM-DD in UTC or ISO datetime "
+    "with timezone). Bounds are inclusive; partial publication dates match overlapping ranges; "
+    "unknown dates cannot satisfy a range. Date metadata comes from the last Lumen sweep."
+)
+
 
 def _call(operation: Any, /, *args: Any, **kwargs: Any) -> dict[str, Any]:
     try:
@@ -49,7 +56,10 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
             "Glob over indexed relative paths and book metadata; never traverses "
             "caller-supplied filesystem paths. case_sensitive is tri-state: "
             "'auto' (default, follows the platform), 'true' or 'false'. A plain "
-            "boolean is also accepted and means the same as 'true'/'false'."
+            "boolean is also accepted and means the same as 'true'/'false'. "
+            "sort accepts path/title/size, or published/created/modified (newest first); "
+            "append _asc or _desc to date sorts. Unknown dates sort last."
+            + DATE_HELP
         ),
         annotations=READ_ONLY,
         structured_output=True,
@@ -62,6 +72,7 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
         case_sensitive: str | bool = "auto",
         include_sections: bool = False,
         sort: str = "path",
+        date_filters: dict[str, str] | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
@@ -74,13 +85,14 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
             case_sensitive=case_sensitive,
             include_sections=include_sections,
             sort=sort,
+            date_filters=date_filters,
             limit=limit,
             cursor=cursor,
         )
 
     @server.tool(
         name="lumen_grep",
-        description="Find exact literal, phrase, FTS, or bounded-regex matches with verified ranges and precise passage locators.",
+        description="Find exact literal, phrase, FTS, or bounded-regex matches with verified ranges and precise passage locators." + DATE_HELP,
         annotations=READ_ONLY,
         structured_output=True,
     )
@@ -95,6 +107,7 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
         max_matches_per_book: int = 3,
         context_chars: int = 480,
         fallback: str = "none",
+        date_filters: dict[str, str] | None = None,
         limit: int = 30,
         cursor: str | None = None,
     ) -> dict[str, Any]:
@@ -110,13 +123,14 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
             max_matches_per_book=max_matches_per_book,
             context_chars=context_chars,
             fallback=fallback,
+            date_filters=date_filters,
             limit=limit,
             cursor=cursor,
         )
 
     @server.tool(
         name="lumen_search",
-        description="Rank topical passages using SQLite FTS5 plus bounded offline WordNet semantic expansion.",
+        description="Rank topical passages using SQLite FTS5 plus bounded offline WordNet semantic expansion." + DATE_HELP,
         annotations=READ_ONLY,
         structured_output=True,
     )
@@ -131,6 +145,7 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
         max_per_book: int = 3,
         include_adjacent: bool = False,
         coverage: str = "include_partial",
+        date_filters: dict[str, str] | None = None,
         limit: int = 20,
         excerpt_chars: int = 700,
         cursor: str | None = None,
@@ -147,6 +162,7 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
             max_per_book=max_per_book,
             include_adjacent=include_adjacent,
             coverage=coverage,
+            date_filters=date_filters,
             limit=limit,
             excerpt_chars=excerpt_chars,
             cursor=cursor,
@@ -210,5 +226,6 @@ def register_tools(server: Any, retrieval: RetrievalService) -> None:
         operation: str,
         query: str,
         strategy: str = "auto",
+        date_filters: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return _call(retrieval.explain_query, operation, query, strategy)
+        return _call(retrieval.explain_query, operation, query, strategy, date_filters=date_filters)

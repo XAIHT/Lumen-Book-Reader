@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git status --short; \"--- REMOTE ---\"; git remote -v; \"--- TRACKED? ---\"; git ls-files --error-unmatch lumen-reading-marks.json 2>&1; \"--- HISTORY OF FILE ---\"; git log --oneline --all -- lumen-reading-marks.json; \"--- BRANCHES ---\"; git branch -a; \"--- GITIGNORE EXISTS? ---\"; Test-Path .gitignore)"
+    ]
+  }
+}

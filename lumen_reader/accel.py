@@ -19,11 +19,11 @@ to the GPU into *replaceable backends* rather than inlined code:
   Tomorrow, potentially, a resident GPU index doing brute-force scoring across
   the whole corpus in one kernel launch.
 
-Both are declared here as protocols with an explicit contract, both have a
-working CPU implementation, and both have a named GPU implementation that
-currently reports itself unavailable *with a reason*.  Nothing above this module
-knows which backend it is talking to, so switching one on is a registration, not
-a refactor.
+Both are declared here as candidate protocols. CPU extraction and SQLite
+search are implemented; GPU names currently represent detection/registration
+seams, not shipped kernels. Registration alone is not execution: Turbo Sweep
+uses resolve_sweep_backend to reject an unwired candidate explicitly, and
+LibraryIndex currently queries SQLite regardless of the search preference.
 
 ──────────────────────────────────────────────────────────────────────────
     An honest word about the target size
@@ -60,6 +60,9 @@ from typing import Any, Protocol, Sequence, runtime_checkable
 #: a 250,000-character text budget, which is 292 KB a book - and the formula in
 #: :func:`index_bytes_per_book` lands on 289 KB for the same inputs.
 INDEX_BYTES_METADATA = 1_200
+# Conservative extra planning allowance for six date fields and four B-trees.
+# Actual on-disk cost varies with root/path lengths, page fill and precision.
+DATE_INDEX_BYTES_PER_BOOK = 384
 
 #: FTS5 postings run a little larger than the text they cover.
 FTS_OVERHEAD = 1.15
@@ -336,6 +339,13 @@ class ExtractionBackend(Protocol):
     3. ``vitals`` must stay truthful while work is in flight, because it is the
        only thing the live monitor reads.
     4. ``stop`` must be safe to call twice and must not lose committed results.
+    5. Every result preserves the book-date contract in ``book_dates.py``:
+       original file birth/mtime (not a staging-buffer timestamp), publication
+       precision/provenance, and date_metadata_version. Metadata-only jobs must
+       retain dates_only=True so the writer never replaces existing FTS text.
+       Date SQL filtering remains authoritative on SQLite even if retrieval
+       candidates are later accelerated. Missing hardware falls back to the
+       same CPU metadata parser; no GPU/DirectStorage dependency is required.
 
     A DirectStorage backend fits this shape without straining it: ``submit``
     becomes an enqueue onto a DStorage queue, the batch size becomes the queue
@@ -419,10 +429,9 @@ _EXTRACTION_REQUIREMENTS = (
 #
 # Hardware being present is necessary but not sufficient: something has to
 # actually implement the kernel.  Keeping that as a registry rather than a
-# hard-coded "not yet" is what makes the seam real - shipping a GPU backend is
-# one ``register_extraction_backend`` call, with nothing above this module
-# changed and no second build of Lumen.  Until then the registry is empty, every
-# ``auto`` resolves to the CPU fleet, and nobody is told otherwise.
+# hard-coded "not yet" separates candidate capabilities from execution. A GPU
+# backend also needs the scanner's queue/result/cancellation adapter; registering
+# a factory alone is not enough. Until then resolve_sweep_backend stays on CPU.
 
 _extraction_implementations: dict[str, Any] = {}
 _search_implementations: dict[str, Any] = {}
@@ -457,8 +466,8 @@ def extraction_backend_status(name: str) -> tuple[bool, str]:
         if not extraction_kernel_ready(name):
             return False, (
                 "Hardware is ready, but no GPU extraction kernel is registered in "
-                "this build. Registering one switches Lumen over — see "
-                "accel.register_extraction_backend."
+                "this build. A kernel and an executable Turbo Sweep adapter "
+                "are both required; CPU extraction remains available."
             )
         return True, "Available: GPU extraction kernel registered and hardware present."
     return False, f"Unknown backend {name!r}."
@@ -475,15 +484,15 @@ def search_backend_status(name: str) -> tuple[bool, str]:
         if not search_kernel_ready(name):
             return False, (
                 f"Hardware is ready ({vram / 1024 ** 3:,.0f} GB VRAM), but no "
-                f"resident index kernel is registered in this build. Registering "
-                f"one switches Lumen over — see accel.register_search_backend."
+                f"resident index kernel is registered in this build. A kernel "
+                f"and a query adapter are both required; SQLite FTS5 remains available."
             )
         return True, f"Available: GPU index registered, {vram / 1024 ** 3:,.0f} GB VRAM."
     return False, f"Unknown backend {name!r}."
 
 
 def resolve_extraction_backend(preference: str = AUTO) -> tuple[str, str]:
-    """The extraction backend that will actually run, and the reason it won.
+    """Resolve a capability candidate, not the scanner's actual executor.
 
     ``auto`` is the whole point: the same build runs everywhere, choosing the
     GPU path on a machine that has one and the CPU fleet on a machine that does
@@ -512,6 +521,23 @@ def resolve_search_backend(preference: str = AUTO) -> tuple[str, str]:
     if ok:
         return preference, why
     return FTS5, f"Falling back to SQLite FTS5 — {why}"
+
+
+def resolve_sweep_backend(preference: str = AUTO) -> tuple[str, str]:
+    """Report the executor TurboScanner actually runs, not just a registry entry.
+
+    The shipped scanner starts CPU extractor processes. A registered candidate
+    alone does not supply its missing GPU queue/result/cancellation adapter.
+    Until an adapter is implemented and exercised, fail safely to CPU instead
+    of showing a GPU label over CPU work (including date metadata backfills).
+    """
+    selected, reason = resolve_extraction_backend(preference)
+    if selected != CPU_FLEET:
+        return CPU_FLEET, (
+            f"Falling back from {selected}: no executable Turbo Sweep adapter is "
+            "installed; CPU fleet indexes text and all three book dates."
+        )
+    return selected, reason
 
 
 def choose_backends(preferred_extraction: str = AUTO, preferred_search: str = AUTO) -> BackendChoice:
@@ -576,8 +602,8 @@ def index_bytes_per_book(text_budget: int = 250_000, with_text: bool = True) -> 
     very large shelf.
     """
     if not with_text:
-        return INDEX_BYTES_METADATA
-    return INDEX_BYTES_METADATA + int(max(0, text_budget) * FTS_OVERHEAD)
+        return INDEX_BYTES_METADATA + DATE_INDEX_BYTES_PER_BOOK
+    return INDEX_BYTES_METADATA + DATE_INDEX_BYTES_PER_BOOK + int(max(0, text_budget) * FTS_OVERHEAD)
 
 
 @dataclass(slots=True)

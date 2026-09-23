@@ -15,6 +15,27 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Added — library date metadata
+
+- Three visible shelf columns: Published, File created and File modified, with
+  theme-aware rendering, narrow-window stacking, newest/oldest sorting, and
+  inclusive range controls that combine with text/format searches.
+- Conservative EPUB/PDF publication extraction retaining year/month/day
+  precision; filesystem birth time is distinct from modification and publication.
+  Missing dates remain unknown. UTC filters and local display are explicit.
+- Additive catalog migration and root-scoped date indexes. The first upgraded
+  sweep backfills unchanged books with zero text budget, preserving FTS, passage
+  revisions and book IDs; subsequent sweeps retain the normal fast skip path.
+- Optional MCP `date_filters` for glob/search/grep, date sorts for glob, date
+  fields/provenance in book results/resources, pending-date status, and explicit
+  legacy-schema handling. Existing seven tools and launch JSON remain compatible.
+- Visible native Qt validation runner, interactive shelf/reader tests and live
+  MCP date queries. Full contract and evidence procedure: [BookDates.md](BookDates.md).
+- Date metadata is checked under CPU-only and GPU/DirectStorage capability
+  fallbacks. Turbo Sweep now reports CPU execution when only a GPU registration
+  hook exists without an executable adapter; capacity planning includes the
+  new date indexes. No GPU extraction kernel is shipped by this change.
+
 ### Changed
 
 - Added a theme-matched version badge beneath the main-window LUMEN wordmark,

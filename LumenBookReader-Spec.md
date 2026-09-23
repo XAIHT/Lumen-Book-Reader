@@ -2,7 +2,7 @@
 
 > **Specification version:** 1.0<br>
 > **Server:** Lumen Book Reader 1.7.2<br>
-> **MCP SDK validated:** 2.1.1<br>
+> **MCP SDK validated:** 2.2.0 (including the date extension)<br>
 > **Primary external client:** Tlamatini<br>
 > **Transport in `LumenBookReader.json`:** MCP over STDIO<br>
 > **Public tools:** 7<br>
@@ -14,6 +14,12 @@ This is the implementation reference for the MCP server in this repository. It
 describes the callable surface that an external assistant receives after loading
 `LumenBookReader.json`. Parameter names, defaults, limits, result fields,
 fallbacks, resource URIs, and errors are taken from the running implementation.
+
+**2026-09-23 additive date extension:** the existing seven tools are preserved.
+Glob, search and grep now accept the shared `date_filters` object described in
+[BookDates.md](BookDates.md); book metadata exposes publication/birth/modification
+dates. No launch-descriptor changes or new permissions are required. Restart
+the updated server in Tlamatini to refresh discovery.
 
 ---
 
@@ -286,7 +292,8 @@ does not walk a caller-supplied directory and cannot escape Lumen's roots.
 | `formats` | string[] or null | No | EPUB + PDF | `epub`, `pdf`, with optional leading period. |
 | `case_sensitive` | string | No | `auto` | `auto`, `true`, `false`. Auto is insensitive on Windows and sensitive elsewhere. |
 | `include_sections` | boolean | No | `false` | Also match active section titles/hrefs. |
-| `sort` | string | No | `path` | `path`, `title`, `modified`, `size`. |
+| `sort` | string | No | `path` | `path`, `title`, `size`; `published`, `created`, `modified` newest-first, with optional `_asc` / `_desc`. Unknown dates last; stable ID ties. |
+| `date_filters` | object<string,string> or null | No | null | Inclusive `published_from/to`, `created_from/to`, `modified_from/to`; see shared date contract below. |
 | `limit` | integer | No | `50` | Clamped to 1–100. |
 | `cursor` | string or null | No | null | Signed continuation cursor from an identical prior call. |
 
@@ -323,7 +330,9 @@ patterns, and any `..` path component fail with `INVALID_ARGUMENT`.
 
 `rank`, `resource_uri`, `book_id`, `root_id`, `relative_path`, `path`, `name`,
 `title`, `author`, `format`, `language`, `subjects`, `publisher`, `size_bytes`,
-`modified_ns`, `coverage`, and `matched_value`.
+`modified_ns`, `coverage`, and `matched_value`, plus `published_date`,
+`publication_precision`, `publication_source`, `created_ns`, `created_at`,
+`modified_at`, and `date_metadata_indexed`. See [BookDates.md](BookDates.md).
 
 A section hit additionally has `match_kind: "section"` and:
 
@@ -367,6 +376,7 @@ match ranges and precise page/section locators.
 | `book_ids` | integer[] or null | No | all books | 1–500 positive IDs. |
 | `formats` | string[] or null | No | EPUB + PDF | `epub` and/or `pdf`. |
 | `max_matches_per_book` | integer | No | `3` | Clamped to 1–20. |
+| `date_filters` | object<string,string> or null | No | null | Shared inclusive date constraints, applied before candidate and text verification limits. |
 | `context_chars` | integer | No | `480` | Clamped to 80–2,000. |
 | `fallback` | string | No | `none` | `none`, `literal`, `fts`; used only when the requested backend is unavailable. |
 | `limit` | integer | No | `30` | Clamped to 1–100. |
@@ -443,6 +453,7 @@ No network lookup or remote model is used.
 | `languages` | string[] or null | No | all | Case-folded metadata codes/names, each capped at 32 chars. |
 | `book_ids` | integer[] or null | No | all | 1–500 positive IDs. |
 | `diversity` | string | No | `book` | `book` enforces `max_per_book`; `none` disables that diversity cap. |
+| `date_filters` | object<string,string> or null | No | null | Shared inclusive date constraints; enforced for passages and capped book-head fallback alike. |
 | `max_per_book` | integer | No | `3` | Clamped to 1–20 when diversity is `book`. |
 | `include_adjacent` | boolean | No | `false` | Adds an adjacent-context URI hint to passage hits. |
 | `coverage` | string | No | `include_partial` | `include_partial` or `complete_only`. |
@@ -638,6 +649,7 @@ full corpus content query. It never returns SQL.
 | `operation` | string | **Yes** | — | `glob`, `grep`, or `search`. |
 | `query` | string | **Yes** | — | Proposed pattern/query. |
 | `strategy` | string | No | `auto` | Search backend strategy; ignored for glob. |
+| `date_filters` | object<string,string> or null | No | null | Validate the shared date contract and explain its query stage without opening the catalog. |
 
 ### 11.3 Example request
 
@@ -658,9 +670,37 @@ grep/search, it includes the normalized safe FTS expression, candidate scope,
 requested/used backend, fallback reason, and warnings. An unsupported operation
 returns a rejected plan with a supported-operation warning.
 
+The plan also includes `date_filters`, `date_filter_stage`,
+`date_filter_timezone`, `publication_range_semantics` and
+`date_index_checked: false`. Date syntax validation does not promise that the
+catalog has been migrated or swept.
+
 ---
 
 ## 12. Common passage/search hit schema
+
+The nested `book` object also includes the date fields documented under glob
+above. This applies to search, grep, related, `lumen_get_book` and book resources.
+
+### Shared date contract (additive extension)
+
+`date_filters` accepts exactly `published_from`, `published_to`, `created_from`,
+`created_to`, `modified_from`, `modified_to`. All supplied keys are ANDed.
+Publication boundaries accept `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; metadata with
+year/month precision matches a range when the possible publication interval
+overlaps it. File boundaries accept `YYYY-MM-DD` (inclusive UTC day) or an ISO
+datetime with `Z`/explicit timezone. Unknown dates cannot satisfy a range.
+Invalid keys/dates/reversed ranges return `INVALID_ARGUMENT`. Dates are never
+guessed from title, filename or PDF creation time. Date-aware glob cursors are
+bound to both sort and filters. Search ranking and grep candidate order remain
+unchanged by date filters.
+
+`lumen_status.catalog.dates` reports `schema_available`, `indexed_books`,
+`pending_books`, `filter_fields`, `file_filter_timezone`. An unmigrated catalog
+still supports ordinary queries but returns `DATE_INDEX_REQUIRED` for new
+publication/birth predicates or sorting; run the updated reader and sweep.
+MCP does not migrate as a query side effect. Full examples and null/precision
+semantics: [BookDates.md](BookDates.md).
 
 Passage hits returned by search, grep, and related operations use:
 
@@ -852,6 +892,7 @@ machine-readable object in structured content and JSON text content:
 |---|---|---|
 | `INVALID_ARGUMENT` | Invalid enum, format, length, seed combination, glob traversal, regex syntax, or argument type/value. | Correct the request. |
 | `INDEX_NOT_FOUND` | Lumen has no library index at the resolved path. | Configure a library and run a Lumen sweep. |
+| `DATE_INDEX_REQUIRED` | Publication/birth filtering or sorting requested against an old schema. | Open the updated reader and sweep; no content-index rebuild is required. |
 | `INDEX_BUSY` | Reader pool exhausted or SQLite is locked. | Retry after current work finishes. |
 | `INDEX_CORRUPT` | SQLite cannot safely answer and the failure is not a lock. | Run doctor, preserve evidence, then rebuild the cache through Lumen. |
 | `ROOT_NOT_AUTHORIZED` | A supplied opaque root ID is unknown. | Refresh status and use only returned root IDs. |

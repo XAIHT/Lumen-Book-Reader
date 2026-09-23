@@ -92,6 +92,23 @@ Every shelf card permanently identifies its original file with a visible full pa
 
 ### Searching the shelf
 
+The shelf now shows **Published**, **File created**, and **File modified** columns.
+Click their headings to switch newest/oldest order; use **Apply dates** for an
+inclusive range alongside text search and format filters. Publication metadata
+retains its year/month/day precision; missing values say **Unknown**. File
+dates display in local time, while range filters explicitly use UTC.
+
+After upgrading, run one ordinary sweep to populate the added fields. Existing
+books use a metadata-only backfill that preserves their full-text and passage
+indexes. Birth time is not the date a file was added to Lumen, and PDF creation
+time is never presented as the book's release. MCP `lumen_glob`, `lumen_search`
+and `lumen_grep` expose the same ranges through `date_filters`; glob also supports
+date sorting. See [BookDates.md](BookDates.md) for exact semantics, examples,
+schema, migration and visible tests.
+
+`lumen_explain_query` validates the same date filters without reading the
+catalog. `lumen_status` reports date coverage and pending backfills.
+
 Two modes, side by side above the shelf:
 
 | Mode | Finds |
@@ -146,6 +163,13 @@ There is no GPU requirement, no NVMe requirement, and no minimum core count. Rea
 There is one build of Lumen, and it adapts. Extraction and search are replaceable backends rather than inlined code, and both default to **Automatic**: Lumen detects what the machine has — CUDA GPU, the DirectStorage runtime, NVMe — and uses the fastest path that is genuinely available, falling back to the CPU fleet and SQLite FTS5 when it is not. Detection runs in the background at startup, so a machine with no GPU at all never waits for it and never has to be configured differently.
 
 The **Acceleration & scale** tab shows exactly what was detected and, when a faster backend is unavailable, precisely which piece is missing — distinguishing *"no CUDA-capable GPU on this machine"* from *"the hardware is ready, but no kernel is registered in this build"*. **It never claims a GPU is doing work that the CPU is doing.** Today no GPU kernel ships, so both automatic paths resolve to the CPU fleet and SQLite FTS5, and the tab says so.
+
+The date-index extension covers the same CPU-only, GPU-present and
+DirectStorage-unavailable fallback paths. Turbo Sweep also guards against a
+registered candidate without an executable adapter: its monitor reports the
+CPU executor actually used. All three dates are preserved through fallback;
+date filtering stays in SQLite. The capability matrix, future GPU result
+contract and visible validation are in [BookDates.md](BookDates.md).
 
 The design, the schema, the pipeline, the measured numbers, and the current limits are all in **[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md)**.
 
