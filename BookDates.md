@@ -1,8 +1,16 @@
 # Book dates: shelf, indexing and MCP reference
 
-Implemented in the development tree on 2026-09-23. No publication date is
+Current development release: **1.8.0**. Implemented in the development tree
+on 2026-09-23, after the commit targeted by the existing `v1.8.0` tag (see
+[CHANGELOG.md](CHANGELOG.md)). No publication date is
 invented and no source EPUB/PDF is edited. This is an additive catalog feature;
 the launch descriptor and seven-tool MCP profile remain compatible.
+
+The current rebuilt archive is
+`dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`. Reader, MCP, installer
+and uninstaller identities were verified as 1.8.0, including real source and
+frozen MCP initialization; see [RELEASING.md](RELEASING.md). The older 1.7.3
+date-feature validation archive below remains historical evidence.
 
 ## What the three columns mean
 
@@ -218,10 +226,10 @@ date/release/machine-profile run is preserved in `release-profile-126.log`.
 This is regression evidence, not a claim of physical GPU kernel execution or a
 guarantee that every third-party book supplies trustworthy publication metadata.
 
-The rebuilt local development release uses the existing Git-derived version
-**1.7.3**, with the manifest accurately recording an uncommitted working tree.
-It does not create a tag, push a release, or replace the installed application.
-The final archive is
+Historical validation artifact (before the 1.8.0 alignment): the local build
+used the then-current Git-derived version **1.7.3**, with its manifest recording
+an uncommitted working tree. Its version and checksum are preserved as evidence,
+not relabeled as a 1.8.0 binary. That archive is
 `dist/Lumen_Release_v1.7.3_win11x64_20260923_144818.zip` (415.8 MiB).
 Its SHA-256 is
 `a9bfcac0adc72c20c9ca4d0989faed475d53da1969c0a8fe833ca4737fb57342`.

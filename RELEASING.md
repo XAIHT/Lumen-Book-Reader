@@ -19,6 +19,42 @@ subsystems with their own design documents, see
 
 ---
 
+## Current release: 1.8.0
+
+The existing GitHub tag `v1.8.0` is already published. To rebuild the current
+checkout as 1.8.0, use `python build_complete_release.py` (no `--bump`). This
+refreshes tags and embeds the version in the reader, MCP sidecar, installer,
+uninstaller and release manifest without creating or pushing another tag.
+The tag targets `1d035f98dc24`; date indexing landed afterwards in `2adaa12`.
+Rebuilding the current checkout includes those changes; the manifest records
+the actual commit and working-tree state. Do not move the published tag.
+Older archives and their checksums remain historical artifacts, not renamed
+1.8.0 packages. The installed application changes only when upgraded.
+
+### Version-alignment gate
+
+`tests/test_release_identity.py` checks current documentation against the
+declared/runtime version and initializes the real source MCP. Set
+`LUMEN_VERIFY_RELEASE` to the absolute new release directory to additionally
+check its manifest, package CRC, all four executable version resources, editable
+package metadata, and the frozen MCP's initialization version/tool discovery.
+Run the check in a visible foreground test window, not offscreen.
+
+After a source version bump, refresh dedicated editable environments with
+`python -m pip install --no-deps --no-build-isolation -e .`. If an old
+repository-level `.egg-info` shadows that metadata, regenerate it using the
+same interpreter's setuptools backend:
+`python -c "from setuptools import setup; setup(script_args=['egg_info'])"`.
+The stale file is generated metadata, not another application installation.
+
+On 2026-09-23 the visible 1.8.0 gate passed after that metadata refresh
+(1 combined cross-surface test, 14.50 seconds). Final evidence is
+`.artifacts/version-180/identity.log` and `identity.xml`; `verify-exit-code.txt`
+is zero. The earlier console attempt's failure is retained separately.
+The new local archive is
+`dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`; its verified SHA-256 is
+`0a4ceb250c937d722a2c78d3ff134255ef92be65ebe0c76643076dee7a722c4d`.
+
 ## The one-liners
 
 ### Date-column feature release checks
@@ -42,9 +78,9 @@ then reconnect for new tool discovery. Keep user books, state and notes intact.
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.4.0 → 1.4.1) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.4.0 → 1.5.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.4.0 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.8.0 → 1.8.1) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.8.0 → 1.9.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.8.0 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -59,7 +95,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.5.0
+git push origin v1.8.1  # example: after explicitly creating the next patch tag
 ```
 
 > **The pipeline never rewrites history.** Git writes are limited to fetching

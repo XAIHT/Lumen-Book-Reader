@@ -21,7 +21,7 @@
 > **Status:** normative architecture and implementation specification<br>
 > **Design version:** 1.0.0<br>
 > **Repository baseline:** Lumen Book Reader 1.5.4, commit `a95cc8976afc13f46fd2b20ad2a696b5188f8a76`<br>
-> **Implemented release:** Lumen Book Reader 1.7.0<br>
+> **Implemented release:** Lumen Book Reader 1.8.0<br>
 > **Protocol target:** MCP `2026-07-28`, with automatic compatibility for `2025-11-25` and the legacy initialization era<br>
 > **Primary client:** Codex / ChatGPT desktop / Codex CLI / Codex IDE<br>
 > **Other clients:** Tlamatini and any conforming MCP client<br>

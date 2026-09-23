@@ -1,7 +1,7 @@
 # Lumen Book Reader MCP — external-client specification
 
 > **Specification version:** 1.0<br>
-> **Server:** Lumen Book Reader 1.7.2<br>
+> **Server:** Lumen Book Reader 1.8.0<br>
 > **MCP SDK validated:** 2.2.0 (including the date extension)<br>
 > **Primary external client:** Tlamatini<br>
 > **Transport in `LumenBookReader.json`:** MCP over STDIO<br>
@@ -80,7 +80,7 @@ warnings go to standard error.
 | Property | Value |
 |---|---|
 | MCP server name | `Lumen Book Reader` |
-| Application version | `1.7.2` |
+| Application version | `1.8.0` |
 | Default transport | STDIO |
 | Optional local transport | Streamable HTTP |
 | Local HTTP endpoint | `http://127.0.0.1:8765/mcp` |
@@ -1137,7 +1137,7 @@ UNC/device commands, placeholders, and secret-like fields.
 - [x] Arguments are an array; no shell command string is used.
 - [x] Environment contains only deterministic UTF-8/flush controls.
 - [x] MCP SDK 2.1.1 is installed in the descriptor's environment.
-- [x] The environment imports this exact checkout as Lumen 1.7.2.
+- [x] The environment imports this exact checkout as Lumen 1.8.0.
 - [x] STDIO initialization succeeds.
 - [x] Exactly seven public tools are discoverable.
 - [x] Every tool has read-only/non-destructive/idempotent/closed-world annotations.

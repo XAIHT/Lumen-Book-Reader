@@ -4,7 +4,7 @@
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
-> Current implementation release: **v1.7.0** (2026-09-02)
+> Current implementation release: **v1.8.0** (2026-09-23)
 
 Build maintenance (2026-09-16): `build_complete_release.py` now uses
 `release_environment.py` to provision isolated `.venv-release` dependencies
@@ -21,6 +21,19 @@ archives and timestamped same-version folders remain available. See RELEASING.md
 This is the code-oriented memory of the project: what exists, when it arrived, how the major systems work, which details are minor but load-bearing, what degrades gracefully, and where comments or release prose differ from executable behavior. It is deliberately based on the repository and Git history, not on promotional inference.
 
 The request that created this document asked for “at least 1,000,000 details.” A literal million-row document would be mostly repetition and would obscure the facts engineers need. This dossier therefore maximizes **verified, atomic, useful coverage** instead: every tracked file at the audited revision is inventoried, major and minor tagged changes are quantified, runtime and release paths are traced, and fallback behavior is stated explicitly. Unknown or aspirational functionality is identified as such rather than invented.
+
+## 0.8 Version alignment with the published v1.8.0 tag — 2026-09-23
+
+The source fallback, public badge, MCP identity documentation and current
+release references now use **1.8.0**. Generated runtime/Windows version
+resources follow the existing Git-derived build pipeline; the UI and MCP do
+not have separate hard-coded version numbers. Historical audit snapshots,
+dependency versions and older package checksums below remain unchanged.
+
+The published `v1.8.0` tag resolves to `1d035f98dc24`, also tagged `v1.7.3`.
+The date-indexing implementation is the following commit, `2adaa12`. The tag
+is preserved: a 1.8.0 build from this checkout includes those post-tag changes
+and its manifest identifies the actual source commit and dirty state.
 
 ## 0.7 Publication, file creation and modification dates — 2026-09-23
 

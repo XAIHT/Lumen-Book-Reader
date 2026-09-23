@@ -4,7 +4,7 @@
 
 Every entry below is derived from what the annotated git tag actually contains,
 not from what a release note remembered afterwards. Git history is never
-rewritten in this project — see the note at the end of this file for two places
+rewritten in this project — see the note at the end of this file for the places
 where a tag's message and a tag's contents disagree, recorded rather than
 tidied away.
 
@@ -14,6 +14,10 @@ the version number; see [RELEASING.md](RELEASING.md).
 ---
 
 ## [Unreleased]
+
+The current checkout reports **1.8.0**, aligned with the already published tag.
+The date-indexing work below is in post-tag commit `2adaa12`; it is included
+when rebuilding this checkout, but is not contained in the immutable tag.
 
 ### Added — library date metadata
 
@@ -36,7 +40,19 @@ the version number; see [RELEASING.md](RELEASING.md).
   hook exists without an executable adapter; capacity planning includes the
   new date indexes. No GPU extraction kernel is shipped by this change.
 
+---
+
+## [1.8.0] — 2026-09-23
+
+Tag `v1.8.0` → `1d035f98dc24`, the same source commit as `v1.7.3`.
+The existing tag is preserved. Although its annotation names date indexing,
+that implementation is the next commit, `2adaa12`; see Unreleased above.
+The following changes are present in the tag relative to `v1.7.2`.
+
 ### Changed
+
+- MCP case-sensitive flags accept explicit string tokens and booleans with
+  consistent tool-schema and retrieval handling for external clients.
 
 - Added a theme-matched version badge beneath the main-window LUMEN wordmark,
   visible on the shelf and while reading, with build commit/date in its tooltip.
@@ -537,7 +553,7 @@ Tag `v1.0.0` → `aaf218d`. The first release.
 
 ## Notes on version history
 
-Three places where a tag's message and a tag's contents disagree. All are
+Four places where a tag's message and a tag's contents disagree. All are
 recorded here rather than corrected, because **git history in this project is
 never rewritten** — no rebase, no amend, no force-push, no tag deletion.
 
@@ -553,5 +569,9 @@ never rewritten** — no rebase, no amend, no force-push, no tag deletion.
    `821322a`, which only deletes three stray screenshots; that patch is
    `69e7acf`. `v1.7.2` reads *"AI Contextual definition improved, to be always
    available…"* but points at `69e7acf`, the definition-execution patch; the
-   Ollama parallel-source work is `cd84008` and is still unreleased. The
+   Ollama parallel-source work is `cd84008` and is included in `v1.8.0`. The
    sections above list what each tag **contains**, not what it says.
+4. **`v1.8.0`** is annotated as date-indexing capability, but targets
+   `1d035f98dc24`, also tagged `v1.7.3`. Date indexing was committed immediately
+   afterwards as `2adaa12`. Current source metadata is aligned to 1.8.0 at the
+   author's request; the published tag and historical artifacts are not moved.
