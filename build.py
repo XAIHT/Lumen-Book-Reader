@@ -307,6 +307,10 @@ def verify_pkg_zip(zip_path: Path) -> None:
     if bad is not None:
         sys.exit(f"ABORT: {zip_path.name} is corrupt - first bad member: {bad}")
 
+    if any(name.casefold() == "lumenbookreader.json" for name in names):
+        sys.exit("ABORT: pkg.zip must not contain a build-machine MCP descriptor; "
+                 "the installer generates LumenBookReader.json at its destination.")
+
     missing = sorted(n for n in required if n not in names)
     if missing:
         sys.exit(

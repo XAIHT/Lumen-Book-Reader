@@ -46,6 +46,7 @@ import tkinter as tk
 import zipfile
 from ctypes import wintypes
 from datetime import datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 # ─── Product identity ────────────────────────────────────────────────────────
@@ -59,6 +60,8 @@ ABOUT_URL = "https://github.com/XAIHT/Lumen-Book-Reader"
 ARP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LumenBookReader"
 DISCOVERY_KEY = r"Software\XAIHT\Lumen Book Reader"
 MANIFEST_NAME = "LumenInstall.json"
+MCP_EXE_NAME = "LumenMCP.exe"
+MCP_CONFIG_NAME = "LumenBookReader.json"
 
 # The file types Lumen can claim. Mirrored EXACTLY by the ProgID table in
 # register_associations.ps1 / unregister_associations.ps1 - adding a format
@@ -237,7 +240,7 @@ class LumenInstaller:
     STEPS = [
         ("Preparing the installation directory…", 0.04),
         ("Extracting Lumen…",                     0.55),
-        ("Writing the install manifest…",         0.03),
+        ("Preparing MCP configuration and manifest…", 0.03),
         ("Installing the uninstaller…",           0.05),
         ("Registering with Windows…",             0.08),
         ("Creating shortcuts…",                   0.08),
@@ -877,6 +880,10 @@ class LumenInstaller:
                 members = zf.namelist()
                 total = max(len(members), 1)
                 for i, member in enumerate(members, 1):
+                    # A build-machine descriptor must never overwrite a user's
+                    # copy before the exporter has a chance to back it up.
+                    if member.replace("\\", "/").casefold() == MCP_CONFIG_NAME.casefold():
+                        continue
                     if self._is_preserved_member(member, target, preserved):
                         top = member.replace("\\", "/").split("/")[0]
                         if top not in kept:
@@ -892,9 +899,11 @@ class LumenInstaller:
             self._set_progress(cumulative)
             self._mark_step(idx, note=f"({len(kept)} kept)" if kept else "")
 
-            # ── 2. The manifest every other component reads ─────────────
+            # ── 2. Install-specific MCP descriptor and manifest ─────────
             idx = 2
             self._activate_step(idx)
+            self._set_progress(cumulative, "Preparing your Tlamatini MCP configuration…")
+            self._write_mcp_config(target)
             self._set_progress(cumulative, "Writing the install manifest…")
             selected = self._selected_extensions()
             self._write_manifest(target, selected)
@@ -967,6 +976,7 @@ class LumenInstaller:
             self.root.after(0, self._show_success, target)
 
         except Exception as exc:            # noqa: BLE001 - surfaced to the user
+            print(f"[INSTALL] Installation failed: {exc}")
             self.root.after(0, self._show_error, str(exc))
 
     # ─── Selections ──────────────────────────────────────────────────────
@@ -990,6 +1000,8 @@ class LumenInstaller:
             "InstallDir": os.path.abspath(target).replace("/", "\\"),
             "LibraryDir": os.path.abspath(library).replace("/", "\\") if library else "",
             "Executable": EXE_NAME,
+            "MCPExecutable": MCP_EXE_NAME,
+            "MCPConfig": MCP_CONFIG_NAME,
             "IconFile": ICON_NAME,
             "Associations": selected,
             "SetAsDefault": bool(self.set_default_var.get()),
@@ -1004,6 +1016,60 @@ class LumenInstaller:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2, ensure_ascii=False)
         print(f"[INSTALL] Wrote {path}")
+
+    def _write_mcp_config(self, target: str) -> str:
+        """Use the installed sidecar's exporter, not the build machine's Python.
+
+        The wizard stays stdlib-only. Failure is fatal before registration:
+        a successful install promises a verified, ready-to-import descriptor.
+        The sidecar owns canonical serialization and atomic backup/replacement.
+        """
+        directory = Path(target).absolute()
+        executable = directory / MCP_EXE_NAME
+        output = directory / MCP_CONFIG_NAME
+        if not executable.is_file():
+            raise OSError(f"MCP configuration unavailable: {executable} is missing. "
+                          "Use a complete Lumen release and run the installer again.")
+        if output.is_symlink() or (output.exists() and not output.is_file()):
+            raise OSError(f"MCP configuration output is not a regular file: {output}")
+        environment = self._clean_env()
+        # Both wizards and the sidecar are frozen applications. Do not let the
+        # child inherit the installer's one-directory bootloader environment.
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONUNBUFFERED"] = "1"
+        command = [str(executable), "config", "emit", "--mode", "installed",
+                   "--executable", str(executable), "--output", str(output),
+                   "--force", "--backup", "--report", "json"]
+        try:
+            result = subprocess.run(
+                command, cwd=str(directory), env=environment,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise OSError("MCP configuration generation timed out after 60 seconds. "
+                          "Close running Lumen MCP sessions and retry installation.") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "No diagnostic output").strip()
+            raise OSError(f"MCP configuration generation failed ({result.returncode}): "
+                          f"{detail[:2000]}")
+        # Verify disk contents independently of the child's success message.
+        # Exact canonical bytes also reject duplicates, BOMs and extra fields.
+        expected = {"mcpServers": {"lumen-book-reader": {
+            "command": str(executable.resolve()), "args": ["serve", "--stdio"],
+            "env": {"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
+        }}}
+        expected_bytes = (json.dumps(expected, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        with output.open("rb") as stream:
+            actual = stream.read(len(expected_bytes) + 1)
+        if actual != expected_bytes:
+            raise OSError(f"MCP configuration verification failed: {output}. "
+                          "The file does not describe this installation.")
+        print(f"[INSTALL] Verified MCP configuration: {output}")
+        print(f"[INSTALL] MCP exporter: {result.stdout.strip()}")
+        return str(output)
 
     # ─── Child-process helpers ───────────────────────────────────────────
     @staticmethod
@@ -1252,6 +1318,7 @@ class LumenInstaller:
         library = self.library_path.get().strip()
         if library:
             lines.append(f"Library:   {library}")
+        lines.append(f"MCP configuration:  {os.path.join(target, MCP_CONFIG_NAME)}")
         if selected and assoc_ok:
             verb = "open in Lumen by default" if self.set_default_var.get() \
                 else "can now be opened with Lumen"
@@ -1272,12 +1339,22 @@ class LumenInstaller:
         self._installing = False
         self.step_label.config(text="✓  Installation complete", fg=SUCCESS)
         body = "\n".join(self._summary)
-        messagebox.showinfo(
+        reveal = messagebox.askyesno(
             "Installation complete",
             f"{PRODUCT_NAME} was installed successfully.\n\n{body}\n\n"
-            "You can remove it any time from Settings ▸ Apps ▸ Installed apps, "
-            "or by running Uninstaller.exe in the installation folder.",
+            "Drag LumenBookReader.json into Tlamatini, confirm the import, "
+            "then activate lumen-book-reader in External ▸ MCPs.\n"
+            "Open Lumen and sweep your library first if it has not been indexed.\n\n"
+            "Show the MCP configuration in File Explorer now?",
         )
+        if reveal:
+            try:
+                subprocess.Popen(["explorer.exe", "/select,",
+                                  os.path.abspath(os.path.join(target, MCP_CONFIG_NAME))],
+                                 env=self._clean_env())
+            except OSError as exc:
+                messagebox.showwarning("Open installation folder",
+                                       f"Open this folder manually:\n{target}\n\n{exc}")
         self.root.destroy()
 
     def _show_error(self, detail: str) -> None:

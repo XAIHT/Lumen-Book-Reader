@@ -104,6 +104,16 @@ FILE TYPES
     "make Lumen the default". You can change any of it later in
     Settings > Apps > Default apps.
 
+TLAMATINI / MCP
+    The installer creates LumenBookReader.json in your chosen installation
+    folder, beside LumenMCP.exe. It contains the real absolute launch path:
+    no Python installation, manual path edits or API keys are needed.
+    Drag that JSON file into Tlamatini, confirm the import, then activate
+    lumen-book-reader in External > MCPs. First open Lumen and sweep your
+    library if it has not been indexed. Both apps must run as the same user.
+    Reinstalling refreshes the file and backs up changed copies as .bakN.
+    If you move/reinstall Lumen elsewhere, import the new JSON again.
+
 UNINSTALL
     Settings > Apps > Installed apps > {product} > Uninstall
     or run Uninstaller.exe from the installation folder.

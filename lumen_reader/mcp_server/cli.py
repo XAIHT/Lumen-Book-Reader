@@ -122,10 +122,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = validate_file(arguments.input, expected_mode=arguments.mode)
             return _print_report(report.as_dict(), arguments.json)
     except ConfigError as exception:
-        print(json.dumps({"error": {"code": exception.code, "message": exception.message}}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"error": {"code": exception.code, "message": exception.message}}, ensure_ascii=True), file=sys.stderr)
         return 3 if "JSON" in exception.code or "SCHEMA" in exception.code else 4
     except RetrievalError as exception:
-        print(json.dumps(exception.as_dict("cli"), ensure_ascii=False), file=sys.stderr)
+        print(json.dumps(exception.as_dict("cli"), ensure_ascii=True), file=sys.stderr)
         return 4
     except (OSError, sqlite3.Error) as exception:
         print(f"{type(exception).__name__}: {exception}", file=sys.stderr)
@@ -135,7 +135,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _print_report(report: dict[str, object], as_json: bool) -> int:
     if as_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        # Frozen Python can ignore PYTHONIOENCODING and keep an ANSI pipe.
+        # JSON escapes preserve every path character without depending on that
+        # stream's codepage. The descriptor itself remains canonical UTF-8.
+        print(json.dumps(report, ensure_ascii=True, indent=2))
     else:
         for key, value in report.items():
             print(f"{key}: {value}")

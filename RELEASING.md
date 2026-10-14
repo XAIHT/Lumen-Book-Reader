@@ -277,6 +277,40 @@ association, and passes `app.main` an absolute path.
 
 ## The mirror
 
+### Installation-local MCP handoff
+
+After extraction, before the manifest and Windows registration, the wizard runs
+the installed `LumenMCP.exe config emit --mode installed` with actual destination
+paths and `--force --backup`. It independently checks canonical bytes on disk.
+Missing sidecar, 60-second timeout, write error or mismatch fails installation.
+The helper uses no shell, has closed stdin, resets its PyInstaller environment,
+captures diagnostics, and does not open an end-user console.
+
+`LumenBookReader.json` must not be staged in `pkg.zip` (`build.py` enforces this).
+Extraction ignores root descriptors in older packages so repair can back up the
+existing copy first. Changed files get exclusive, flushed `.bakN` backups;
+identical files stay untouched. Completion offers to reveal the JSON in Explorer.
+See [Spec §1.2](LumenBookReader-Spec.md#12-installed-descriptor) for import and repair.
+
+`tools/validate_mcp_install.py` shows native progress and installer windows,
+captures Shoter desktop evidence, and loads the generated descriptor against a
+real frozen MCP from an unrelated working directory. Test installation uses
+temporary folders; registry, associations, shortcuts and shell refresh are isolated.
+
+```powershell
+.venv-release\Scripts\python.exe tools\validate_mcp_install.py --build `
+  --shoter-launcher "C:\path\to\harness\shoter_shot.py" `
+  --photo-python "C:\path\to\python-with-Shoter-dependencies.exe"
+```
+
+Use a Python interpreter that can run Shoter for `--photo-python`. To validate
+an already-built package without rebuilding, replace `--build` with
+`--package "C:\path\to\release\pkg.zip"`. Logs, JUnit XML and per-test photos
+are written under `.artifacts/mcp-install/<timestamp>/`. Desktop screenshots
+can include unrelated private windows; keep them local, outside commits.
+Add `--integration-only` with `--package` for a fast rerun of the four native
+installation/frozen-server checks; it cannot be combined with `--build`.
+
 Every single thing the installer writes, the uninstaller removes:
 
 | install | uninstall |
@@ -284,6 +318,7 @@ Every single thing the installer writes, the uninstaller removes:
 | create the install directory | remove the install directory |
 | extract `pkg.zip` | delete the files (keeping the preserve list) |
 | write `LumenInstall.json` | read it, act on it, delete it |
+| generate `LumenBookReader.json` and `.bakN` copies | remove with installed files; client-imported copies are outside Lumen's ownership |
 | copy `Uninstaller.exe` | schedule its own deletion after exit |
 | register ARP + discovery | delete ARP + discovery |
 | `CreateShortcut.ps1` | `RemoveShortcut.ps1` |

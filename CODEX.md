@@ -1,5 +1,16 @@
 # CODEX project dossier
 
+Installation handoff (2026-10-14): `install.py` generates and independently
+verifies `<InstallDir>\LumenBookReader.json` using the extracted `LumenMCP.exe`
+before manifest/registration, and offers Explorer reveal for Tlamatini import.
+Repair keeps identical files and backs up changes. `config_export.py` rejects
+output symlinks before resolving them and creates exclusive/flushed backups;
+`build.py` rejects build-machine descriptors in the payload. The installed
+reader and MCP share the user's runtime index without embedding a stale root.
+CLI JSON reports escape Unicode to survive frozen Windows ANSI stdout pipes.
+See [Spec §1.2](LumenBookReader-Spec.md#12-installed-descriptor) and the visible
+validation runner `tools/validate_mcp_install.py`. No public tool schema changes.
+
 > Living engineering record for **Lumen Book Reader**
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`

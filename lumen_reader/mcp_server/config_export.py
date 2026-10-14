@@ -111,9 +111,12 @@ def emit(
     force: bool = False,
     backup: bool = False,
 ) -> ConfigReport:
-    destination = Path(output).expanduser().resolve(strict=False)
+    # Check the leaf before resolving: resolve() would follow a symlink and
+    # silently turn an unsafe output into its unrelated target.
+    destination = Path(output).expanduser().absolute()
     if destination.is_symlink():
         raise ConfigError("CONFIG_OUTPUT_UNSAFE", "A symlink/reparse output is not accepted.")
+    destination = destination.resolve(strict=False)
     data = canonical_bytes(model)
     digest = hashlib.sha256(data).hexdigest()
     if destination.exists():
@@ -130,12 +133,15 @@ def emit(
             )
         backup_path = _backup_name(destination)
         try:
-            backup_path.write_bytes(current)
+            with backup_path.open("xb") as stream:
+                stream.write(current)
+                stream.flush()
+                os.fsync(stream.fileno())
         except OSError as exception:
             raise ConfigError("CONFIG_BACKUP_FAILED", str(exception)) from exception
-    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temp_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=str(destination.parent)
         )
@@ -223,8 +229,9 @@ def validate_bytes(
     command = Path(command_text).resolve(strict=False)
     if expected_command is not None and os.path.normcase(str(command)) != os.path.normcase(str(expected_command)):
         raise ConfigError("CONFIG_COMMAND_IDENTITY_FAILED", "Serialized command changed during rendering.")
-    lowered = text.casefold()
-    if any(marker in lowered for marker in ("<user>", "todo", "authorization", "bearer", "api_key")):
+    # Secret-bearing fields are rejected by the exact schema above. Words in
+    # a legitimate install directory (e.g. "TODO" or "Bearer") are not secrets.
+    if "<user>" in command_text.casefold():
         raise ConfigError("CONFIG_SENSITIVE_VALUE", "Config contains a placeholder or forbidden secret-like field.")
     return document, mode, command
 
@@ -255,6 +262,6 @@ def _backup_name(path: Path) -> Path:
     index = 1
     while True:
         candidate = path.with_name(f"{path.name}.bak{index}")
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             return candidate
         index += 1

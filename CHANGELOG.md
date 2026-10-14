@@ -15,6 +15,22 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Added — installation-specific Tlamatini MCP handoff
+
+- Installer generates and reads back `LumenBookReader.json` in the actual
+  installation folder using the installed sidecar. Completion offers to reveal
+  it in Explorer for drag-and-drop import and activation in Tlamatini.
+- Repair is idempotent and backs up changed descriptors before atomic replacement.
+  Missing sidecars, write failures, timeout and invalid output prevent false
+  success. The wizard remains stdlib-only and touches no client catalog.
+- Packaging rejects build-machine descriptors. Exporter checks symlinks before
+  resolving and creates exclusive, flushed backups; legitimate directory names
+  containing words such as `TODO` are no longer mistaken for secrets.
+- CLI JSON reports/errors escape Unicode without losing its value, preventing
+  frozen Windows ANSI stdout pipes from failing on non-Latin install paths.
+- Visible installation/repair and live frozen-MCP tests cover custom paths,
+  discovery/search, failure cases and descriptor cleanup using temporary data.
+
 The current checkout reports **1.8.0**, aligned with the already published tag.
 The date-indexing work below is in post-tag commit `2adaa12`; it is included
 when rebuilding this checkout, but is not contained in the immutable tag.

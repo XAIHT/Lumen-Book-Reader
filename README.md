@@ -175,6 +175,17 @@ The design, the schema, the pipeline, the measured numbers, and the current limi
 
 ### Lumen MCP: your complete shelf as on-demand AI context
 
+**Windows installation:** the installer creates `LumenBookReader.json` beside
+`LumenMCP.exe` in the actual installation folder, including custom paths with
+spaces or Unicode. At completion, choose to reveal it in Explorer, drag it
+into Tlamatini, confirm the import, and activate `lumen-book-reader` in
+**External ▸ MCPs**. No Python installation or manual path editing is needed.
+Run both applications as the same Windows user; open Lumen and sweep the library
+first if it is not indexed. Repair regenerates the descriptor and backs up
+changed copies as `.bakN`. After moving the installation, import the new file
+again. The repository-root JSON is for development, not an installed copy.
+See [the installed-descriptor contract](LumenBookReader-Spec.md#12-installed-descriptor).
+
 Lumen now includes a separate, headless Model Context Protocol sidecar. It gives Codex, Tlamatini, and other MCP clients a bounded **Globber + Grepper + passage-RAG** view of the books already authorized and indexed by Lumen—without preloading the corpus into a model and without accepting arbitrary filesystem paths.
 
 | MCP capability | What it exposes | Safety/fallback truth |
