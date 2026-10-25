@@ -15,7 +15,7 @@ validation runner `tools/validate_mcp_install.py`. No public tool schema changes
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
-> Current implementation release: **v1.8.0** (2026-09-23)
+> Current implementation release: **v1.8.2** (2026-10-25)
 
 Build maintenance (2026-09-16): `build_complete_release.py` now uses
 `release_environment.py` to provision isolated `.venv-release` dependencies

@@ -19,17 +19,20 @@ subsystems with their own design documents, see
 
 ---
 
-## Current release: 1.8.0
+## Current release: 1.8.2
 
-The existing GitHub tag `v1.8.0` is already published. To rebuild the current
-checkout as 1.8.0, use `python build_complete_release.py` (no `--bump`). This
+The existing GitHub tag `v1.8.2` is already published. To rebuild the current
+checkout as 1.8.2, use `python build_complete_release.py` (no `--bump`). This
 refreshes tags and embeds the version in the reader, MCP sidecar, installer,
 uninstaller and release manifest without creating or pushing another tag.
-The tag targets `1d035f98dc24`; date indexing landed afterwards in `2adaa12`.
-Rebuilding the current checkout includes those changes; the manifest records
-the actual commit and working-tree state. Do not move the published tag.
+The tag targets `630602359d56`; the manifest records the actual commit and
+working-tree state. Do not move the published tag.
+The current archive is
+`dist/Lumen_Release_v1.8.2_win11x64_20261025_115909.zip`, built from that commit
+with a clean working tree; its checksum sidecar records SHA-256
+`be43af5ecfdcf9c66900292f2919182dbdf8b88c2f49bbc4d9e49a671fa6114c`.
 Older archives and their checksums remain historical artifacts, not renamed
-1.8.0 packages. The installed application changes only when upgraded.
+1.8.2 packages. The installed application changes only when upgraded.
 
 ### Version-alignment gate
 
@@ -47,11 +50,11 @@ same interpreter's setuptools backend:
 `python -c "from setuptools import setup; setup(script_args=['egg_info'])"`.
 The stale file is generated metadata, not another application installation.
 
-On 2026-09-23 the visible 1.8.0 gate passed after that metadata refresh
-(1 combined cross-surface test, 14.50 seconds). Final evidence is
-`.artifacts/version-180/identity.log` and `identity.xml`; `verify-exit-code.txt`
-is zero. The earlier console attempt's failure is retained separately.
-The new local archive is
+The last recorded gate run is for 1.8.0: on 2026-09-23 the visible gate passed
+after that metadata refresh (1 combined cross-surface test, 14.50 seconds).
+Final evidence is `.artifacts/version-180/identity.log` and `identity.xml`;
+`verify-exit-code.txt` is zero. The earlier console attempt's failure is
+retained separately. That run's local archive is
 `dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`; its verified SHA-256 is
 `0a4ceb250c937d722a2c78d3ff134255ef92be65ebe0c76643076dee7a722c4d`.
 
@@ -78,9 +81,9 @@ then reconnect for new tool discovery. Keep user books, state and notes intact.
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.8.0 → 1.8.1) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.8.0 → 1.9.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.8.0 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.8.2 → 1.8.3) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.8.2 → 1.9.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.8.2 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -95,7 +98,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.8.1  # example: after explicitly creating the next patch tag
+git push origin v1.8.3  # example: after explicitly creating the next patch tag
 ```
 
 > **The pipeline never rewrites history.** Git writes are limited to fetching

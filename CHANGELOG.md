@@ -15,6 +15,39 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+No changes since `v1.8.2`.
+
+---
+
+## [1.8.2] — 2026-10-25
+
+Tag `v1.8.2` → `630602359d56`. The following changes are present in the tag
+relative to `v1.8.1`.
+
+### Fixed — MCP retrieval no longer hides books missing from a partial passage index
+
+- As soon as one book had passages, `search` and `grep` read passages only, so
+  every book the passage builder had not reached yet — nearly all of them during
+  a first build, and each book a later sweep adds — dropped out of the results
+  while the reply still looked complete. `status`, `search` and `grep` now count
+  the in-scope books without an active passage revision and add a warning naming
+  that count and `lumen-mcp index build`. A failed count still warns rather than
+  staying silent; textless and locked PDFs are not counted. The warning does not
+  set `partial`, which describes the call, not the index.
+- `tests/test_retrieval_service.py` pins this with a half-built two-book index.
+
+### Repository
+
+- `8613c2d` adds `Pivot.zip` (88 MiB) at the repository root; no source file changes.
+
+---
+
+## [1.8.1] — 2026-10-14
+
+Tag `v1.8.1` → `069b4d65ce7c`. The following changes are present in the tag
+relative to `v1.8.0`, including the date-indexing commit `2adaa12` that the
+`v1.8.0` annotation names but does not contain (see the note at the end).
+
 ### Added — installation-specific Tlamatini MCP handoff
 
 - Installer generates and reads back `LumenBookReader.json` in the actual
@@ -30,10 +63,6 @@ the version number; see [RELEASING.md](RELEASING.md).
   frozen Windows ANSI stdout pipes from failing on non-Latin install paths.
 - Visible installation/repair and live frozen-MCP tests cover custom paths,
   discovery/search, failure cases and descriptor cleanup using temporary data.
-
-The current checkout reports **1.8.0**, aligned with the already published tag.
-The date-indexing work below is in post-tag commit `2adaa12`; it is included
-when rebuilding this checkout, but is not contained in the immutable tag.
 
 ### Added — library date metadata
 
@@ -62,7 +91,7 @@ when rebuilding this checkout, but is not contained in the immutable tag.
 
 Tag `v1.8.0` → `1d035f98dc24`, the same source commit as `v1.7.3`.
 The existing tag is preserved. Although its annotation names date indexing,
-that implementation is the next commit, `2adaa12`; see Unreleased above.
+that implementation is the next commit, `2adaa12`; see [1.8.1] above.
 The following changes are present in the tag relative to `v1.7.2`.
 
 ### Changed
@@ -589,5 +618,6 @@ never rewritten** — no rebase, no amend, no force-push, no tag deletion.
    sections above list what each tag **contains**, not what it says.
 4. **`v1.8.0`** is annotated as date-indexing capability, but targets
    `1d035f98dc24`, also tagged `v1.7.3`. Date indexing was committed immediately
-   afterwards as `2adaa12`. Current source metadata is aligned to 1.8.0 at the
-   author's request; the published tag and historical artifacts are not moved.
+   afterwards as `2adaa12` and is first contained in `v1.8.1`. Source metadata
+   was aligned to 1.8.0 at the author's request in `2f16769`; the published tag
+   and historical artifacts are not moved.

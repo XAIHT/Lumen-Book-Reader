@@ -1,14 +1,17 @@
 # Book dates: shelf, indexing and MCP reference
 
-Current development release: **1.8.0**. Implemented in the development tree
-on 2026-09-23, after the commit targeted by the existing `v1.8.0` tag (see
+Current development release: **1.8.2**. Implemented in the development tree
+on 2026-09-23 as `2adaa12`, after the commit targeted by the existing `v1.8.0`
+tag; first contained in `v1.8.1` and carried into `v1.8.2` (see
 [CHANGELOG.md](CHANGELOG.md)). No publication date is
 invented and no source EPUB/PDF is edited. This is an additive catalog feature;
 the launch descriptor and seven-tool MCP profile remain compatible.
 
-The current rebuilt archive is
-`dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`. Reader, MCP, installer
-and uninstaller identities were verified as 1.8.0, including real source and
+The current release archive is
+`dist/Lumen_Release_v1.8.2_win11x64_20261025_115909.zip`, built from the clean
+`v1.8.2` commit. The last recorded cross-surface identity check is the 1.8.0
+one: `dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`, whose reader,
+MCP, installer and uninstaller were verified as 1.8.0, including real source and
 frozen MCP initialization; see [RELEASING.md](RELEASING.md). The older 1.7.3
 date-feature validation archive below remains historical evidence.
 
