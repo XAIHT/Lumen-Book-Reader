@@ -144,6 +144,12 @@ class RetrievalService:
                 "coverage": coverage,
                 "passage_index": "ready" if passage_count else "legacy_fallback",
             }
+            if passage_count:
+                # "ready" means search has switched to passages, not that every
+                # book has them; say how many it can no longer see.
+                unindexed = _unindexed_warning(self._unindexed_in_scope(connection, roots))
+                if unindexed:
+                    base["warnings"].append(unindexed)
             if include_roots:
                 base["roots"] = [
                     {
@@ -445,6 +451,14 @@ class RetrievalService:
             warnings: list[str] = []
             if fallback_used or not ready:
                 warnings.append("Passage coverage was unavailable for these hits; using capped book-head text.")
+            if raw_rows:
+                # Passage hits suppress the book-head fallback, so unindexed books
+                # were never read on this path.
+                unindexed = _unindexed_warning(self._unindexed_in_scope(
+                    connection, selected, format_values, book_values,
+                ))
+                if unindexed:
+                    warnings.append(unindexed)
             if strategy == "hybrid" and not semantic.available:
                 warnings.append(semantic.reason)
             coverage_summary = self._coverage(connection, selected)
@@ -591,6 +605,19 @@ class RetrievalService:
                 warnings.append(f"Requested {mode} was unavailable; explicit {effective_mode} fallback used.")
             if not ready:
                 warnings.append("Exact locations are limited to capped book-head text until passages are built.")
+            # Once passages exist, grep inspects passages only, even when it finds
+            # nothing - which is exactly when a skipped book matters most.  The
+            # book-head rows of the OperationalError fallback read every book.
+            read_passages_only = ready and (
+                not candidates
+                or ("passage_id" in candidates[0].keys() and candidates[0]["passage_id"] is not None)
+            )
+            if read_passages_only:
+                unindexed = _unindexed_warning(self._unindexed_in_scope(
+                    connection, selected, format_values, book_values,
+                ))
+                if unindexed:
+                    warnings.append(unindexed)
             if partial:
                 warnings.append("Verification stopped at the configured inspected-text budget.")
             return {
@@ -1124,6 +1151,37 @@ class RetrievalService:
                 suggested_action="Run a Lumen sweep, then `lumen-mcp index build` for complete coverage.",
             )
 
+    @staticmethod
+    def _unindexed_in_scope(
+        connection: sqlite3.Connection,
+        roots: Sequence[RootScope],
+        formats: Sequence[str] = (),
+        book_ids: Sequence[int] = (),
+    ) -> int | None:
+        """Books in scope that the passage path cannot see at all.
+
+        ``_passage_index_ready`` turns true as soon as ONE book has passages,
+        and from then on search and grep read passages only.  Every book the
+        builder has not reached yet - nearly all of them during a first build,
+        and each book a later sweep adds - dropped out of the results while
+        the reply still looked complete.  Counting them is what lets the reply
+        say so.  Textless and locked PDFs have an active revision and are not
+        counted: none of their text was skipped.  ``None`` means the count
+        itself failed, which must still produce a warning, never silence.
+        """
+        sql = (
+            "SELECT COUNT(*) FROM books b WHERE NOT EXISTS (SELECT 1 FROM rag_documents d"
+            " WHERE d.book_id=b.id AND d.active_revision IS NOT NULL)"
+        )
+        parameters: list[Any] = []
+        sql, parameters = _add_in(sql, parameters, "b.root", [root.path for root in roots])
+        sql, parameters = _add_in(sql, parameters, "b.ext", formats)
+        sql, parameters = _add_in(sql, parameters, "b.id", book_ids)
+        try:
+            return int(connection.execute(sql, parameters).fetchone()[0])
+        except sqlite3.Error:
+            return None
+
     def _passage_search_rows(
         self,
         connection: sqlite3.Connection,
@@ -1505,6 +1563,25 @@ def _add_in(
         sql += f" AND {column} IN ({','.join('?' for _ in values)})"
         parameters.extend(values)
     return sql, parameters
+
+
+def _unindexed_warning(count: int | None) -> str | None:
+    """The coverage warning the design always required (Design 11.2: "Corpus
+    incompleteness belongs under `coverage` and warnings") but nothing emitted.
+    It is a warning, not ``partial``: ``partial`` describes this call's
+    execution, and the corpus gap is a property of the index."""
+    if count == 0:
+        return None
+    if count is None:
+        return (
+            "Passage coverage could not be counted, so books that are not passage-indexed"
+            " yet may have been skipped. Run `lumen-mcp index build` for complete coverage."
+        )
+    return (
+        f"{count:,} book(s) in scope are not passage-indexed yet. Search and grep read"
+        " only passage-indexed books, so the text of these books is not searched and"
+        " they cannot appear in search or grep results. Run `lumen-mcp index build` for complete coverage."
+    )
 
 
 def _root_id(path: str) -> str:

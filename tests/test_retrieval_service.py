@@ -190,3 +190,54 @@ def test_legacy_catalog_supports_status_glob_book_and_search_before_migration(
     assert search["hits"][0]["precision"] == "book_level"
     related = service.related(book_id=book_id, relationship="conceptual", limit=1)
     assert related["hits"]
+
+
+def test_partial_passage_index_warns_about_books_it_cannot_see(tmp_path: Path) -> None:
+    """A half-built passage index used to drop unindexed books silently.
+
+    As soon as one book had passages, search and grep read passages only, so a
+    book the builder had not reached yet vanished from the results with no
+    warning.  Found while the first build of a 13,192-book library was running:
+    after the first few minutes every search looked complete and read almost
+    none of it.
+    """
+    root = tmp_path / "books"
+    shared = "Quantum circuits are compiled with Qiskit before they run on hardware. " * 30
+    make_epub(root / "indexed.epub", "Indexed Quantum", "Ada Qubit", shared)
+    make_epub(root / "waiting.epub", "Waiting Quantum", "Grace Gate", shared)
+    data = tmp_path / "state"
+    database = data / "library-index.db"
+    with LibraryIndex(database) as index:
+        index.scan(root, workers=1)
+        indexed_id = int(index.connection.execute(
+            "SELECT id FROM books WHERE name='indexed.epub'"
+        ).fetchone()[0])
+    paths = RuntimePaths(data, data / "reader-state.json", database, data / "logs", data / "cache")
+    PassageBuilder(database).build(book_ids=[indexed_id])
+    service = RetrievalService(paths)
+
+    def skipped(result: dict) -> list[str]:
+        return [warning for warning in result["warnings"] if "not passage-indexed" in warning]
+
+    status = service.status()
+    assert status["corpus"]["passage_index"] == "ready"
+    assert skipped(status) and skipped(status)[0].startswith("1 book(s)")
+
+    search = service.search("qiskit")
+    assert {hit["book"]["id"] for hit in search["hits"]} == {indexed_id}
+    assert skipped(search) and skipped(search)[0].startswith("1 book(s)")
+    assert search["partial"] is False
+
+    grep = service.grep("Qiskit")
+    assert skipped(grep) and skipped(grep)[0].startswith("1 book(s)")
+    nothing = service.grep("absent from every book")
+    assert not nothing["hits"] and skipped(nothing)
+
+    narrowed = service.search("qiskit", book_ids=[indexed_id])
+    assert not skipped(narrowed)
+
+    PassageBuilder(database).build()
+    complete = RetrievalService(paths)
+    assert not skipped(complete.status())
+    assert not skipped(complete.search("qiskit"))
+    assert not skipped(complete.grep("Qiskit"))
