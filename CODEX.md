@@ -15,7 +15,7 @@ validation runner `tools/validate_mcp_install.py`. No public tool schema changes
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
-> Current implementation release: **v1.8.2** (2026-10-25)
+> Current implementation release: **v1.8.3** (2026-11-03)
 
 Build maintenance (2026-09-16): `build_complete_release.py` now uses
 `release_environment.py` to provision isolated `.venv-release` dependencies
@@ -35,16 +35,16 @@ The request that created this document asked for “at least 1,000,000 details.�
 
 ## 0.8 Version alignment with the published v1.8.0 tag — 2026-09-23
 
-The source fallback, public badge, MCP identity documentation and current
-release references now use **1.8.0**. Generated runtime/Windows version
-resources follow the existing Git-derived build pipeline; the UI and MCP do
+At that time, the source fallback, public badge, MCP identity documentation
+and release references were aligned to **1.8.0**. Generated runtime/Windows
+version resources follow the existing Git-derived build pipeline; the UI and MCP do
 not have separate hard-coded version numbers. Historical audit snapshots,
 dependency versions and older package checksums below remain unchanged.
 
 The published `v1.8.0` tag resolves to `1d035f98dc24`, also tagged `v1.7.3`.
 The date-indexing implementation is the following commit, `2adaa12`. The tag
-is preserved: a 1.8.0 build from this checkout includes those post-tag changes
-and its manifest identifies the actual source commit and dirty state.
+was preserved: the 1.8.0 build from that checkout included those post-tag
+changes and its manifest identified the actual source commit and dirty state.
 
 ## 0.7 Publication, file creation and modification dates — 2026-09-23
 

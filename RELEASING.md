@@ -19,20 +19,21 @@ subsystems with their own design documents, see
 
 ---
 
-## Current release: 1.8.2
+## Current release: 1.8.3
 
-The existing GitHub tag `v1.8.2` is already published. To rebuild the current
-checkout as 1.8.2, use `python build_complete_release.py` (no `--bump`). This
+The existing GitHub tag `v1.8.3` is already published. To rebuild the current
+checkout as 1.8.3, use `python build_complete_release.py` (no `--bump`). This
 refreshes tags and embeds the version in the reader, MCP sidecar, installer,
 uninstaller and release manifest without creating or pushing another tag.
-The tag targets `630602359d56`; the manifest records the actual commit and
+The tag targets `71a06ad0e75f`; the manifest records the actual commit and
 working-tree state. Do not move the published tag.
 The current archive is
-`dist/Lumen_Release_v1.8.2_win11x64_20261025_115909.zip`, built from that commit
-with a clean working tree; its checksum sidecar records SHA-256
-`be43af5ecfdcf9c66900292f2919182dbdf8b88c2f49bbc4d9e49a671fa6114c`.
+`dist/Lumen_Release_v1.8.3_Win11x64.zip`, built from that commit
+on 2026-11-03 with a clean working tree; its SHA-256 was verified against the
+checksum sidecar:
+`3411b1e549c3fc8167bfeb1cc3bc9b2dbb3e799f49b623df5f610d995b2f4778`.
 Older archives and their checksums remain historical artifacts, not renamed
-1.8.2 packages. The installed application changes only when upgraded.
+1.8.3 packages. The installed application changes only when upgraded.
 
 ### Version-alignment gate
 
@@ -81,9 +82,9 @@ then reconnect for new tool discovery. Keep user books, state and notes intact.
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.8.2 → 1.8.3) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.8.2 → 1.9.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.8.2 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.8.3 → 1.8.4) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.8.3 → 1.9.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.8.3 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -98,7 +99,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.8.3  # example: after explicitly creating the next patch tag
+git push origin v1.8.4  # example: after explicitly creating the next patch tag
 ```
 
 > **The pipeline never rewrites history.** Git writes are limited to fetching

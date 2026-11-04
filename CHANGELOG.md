@@ -15,13 +15,22 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+- Align current-release documentation and package metadata with `v1.8.3`.
+
+---
+
+## [1.8.3] — 2026-11-03
+
+Tag `v1.8.3` → `71a06ad0e75f`. The following changes are present in the tag
+relative to `v1.8.2`.
+
+### Added — catalog maintenance
+
 - The shelf now supports right-click **Remove from catalog…** and a cancellable
   **Catalog tools → Check for damaged books…** review across the entire indexed
   library. Neither action deletes source files or reading data. Confirmed
   removals clear index/search entries and stay excluded across sweeps until
   the file changes or the user allows rediscovery.
-
-No changes since `v1.8.2`.
 
 ---
 
