@@ -383,6 +383,20 @@ def test_a_scanner_refuses_a_second_sweep(library: Path, tmp_path: Path) -> None
     scanner.wait(120)
 
 
+def test_cancelled_fleet_allows_interpreter_shutdown(tmp_path: Path) -> None:
+    """A successful snapshot is not enough: the queue feeder must let Python exit."""
+    import subprocess
+
+    source = Path(__file__).resolve()
+    # Separate interpreter intentionally: its multiprocessing finalizers run
+    # after pytest prints its result. Inherit the visible runner's console.
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-s", "--basetemp", str(tmp_path / "child"),
+         f"{source}::test_cancelling_stops_the_sweep_and_leaves_the_index_usable"],
+        cwd=source.parents[1], timeout=150, check=True,
+    )
+
+
 def test_the_run_is_recorded_for_the_settings_window(library: Path, tmp_path: Path) -> None:
     sweep(tmp_path / "i.db", library, fleet_config())
     with LibraryIndex(tmp_path / "i.db") as index:

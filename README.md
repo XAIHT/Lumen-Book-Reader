@@ -92,6 +92,23 @@ Every shelf card permanently identifies its original file with a visible full pa
 
 ### Searching the shelf
 
+To **remove one book from this catalog**, right-click its row in the scrollable
+shelf and choose **Remove from catalog…**. The confirmation shows the original
+path. This removes the index entry, **not** the file, notes, or reading position.
+
+For cleanup, choose **Catalog tools → Check for damaged books…** next to Sweep.
+It checks the whole indexed library, regardless of search filters or which page
+is visible. You can cancel the check, review the count and file details, or
+confirm removal. Password-protected, unavailable, changed, or inconclusive files
+are left alone; having no text layer or having failed indexing is not evidence
+of corruption. This is an openability/integrity check, not a PDF page-by-page
+render test. A large EPUB library can take time because ZIP integrity is checked.
+
+Ordinary sweeps skip removed files while their size and modification time are
+unchanged. Repaired or replaced files with a changed fingerprint can reappear.
+To bring unchanged files back, choose **Catalog tools → Allow removed books on
+next sweep…** and run a sweep. These choices apply to the current library only.
+
 The shelf now shows **Published**, **File created**, and **File modified** columns.
 Click their headings to switch newest/oldest order; use **Apply dates** for an
 inclusive range alongside text search and format filters. Publication metadata

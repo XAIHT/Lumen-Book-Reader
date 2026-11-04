@@ -885,6 +885,7 @@ class TurboScanner:
         self.database = Path(database)
         self.root = Path(root).expanduser()
         self.root_key = normalize_root(self.root)
+        self._catalog_exclusions = {}
         self.config = config or ScanConfig()
         self._on_message = on_message
 
@@ -1214,6 +1215,7 @@ class TurboScanner:
         with LibraryIndex(self.database, text_budget=self._text_budget) as index:
             index.recover_wal(self._say)
             self._generation = index.next_generation(self.root_key)
+            self._catalog_exclusions = index.catalog_exclusions(self.root_key)
 
         with self._lock:
             self._phase = "sweeping"
@@ -1261,6 +1263,21 @@ class TurboScanner:
         self._touch_queue.put(None)             # unbounded lightweight queue
         if not self._join_stage(writer, "writer", _SHUTDOWN_GRACE):
             self._fail_stage("writer", "did not stop after cancellation")
+        if not self._inline:
+            # Once the fleet and writer have stopped, a cancelled sweep has
+            # no reader for any buffered jobs. Joining that feeder at interpreter
+            # exit can hang forever on a full Windows pipe. Never discard a
+            # healthy sweep's queue while it is still delivering books.
+            if self._cancel.is_set() or self._fatal.is_set():
+                self._jobs.cancel_join_thread()
+                self._results.cancel_join_thread()
+                try:
+                    while True:
+                        self._jobs.get_nowait()
+                except (queue.Empty, EOFError, OSError, ValueError):
+                    pass
+            self._jobs.close()
+            self._results.close()
         sampler.join(timeout=1.0)
 
     def _finalise(self) -> None:
@@ -1404,6 +1421,9 @@ class TurboScanner:
                             if globs and self._excluded(entry.path, globs):
                                 continue
                             stat = entry.stat(follow_symlinks=False)
+                            if self._catalog_exclusions and self._catalog_exclusions.get(
+                                    os.path.normcase(entry.path)) == (stat.st_size, stat.st_mtime_ns):
+                                continue
                             if stat.st_size < min_bytes:
                                 continue
                             if max_bytes and stat.st_size > max_bytes:
@@ -1682,19 +1702,41 @@ class TurboScanner:
         touches_open = True
         batch_size = max(16, self.config.write_batch)
         last_commit = time.monotonic()
+        version = None
+        exclusions = {}
 
         def flush() -> None:
-            nonlocal last_commit
+            nonlocal last_commit, version, exclusions
             if not pending and not touches:
                 return
             assert connection is not None
             cursor = connection.cursor()
             indexed = failed = rejected = committed_bytes = 0
             diagnostics: list[str] = []
+            omitted = omitted_bytes = 0
             try:
+                # Serialize the exclusion decision with publication. Another
+                # Lumen instance can remove an entry after our walkers saw it.
+                cursor.execute("BEGIN IMMEDIATE")
                 if pending:
+                    current = cursor.execute("PRAGMA data_version").fetchone()[0]
+                    if version != current:
+                        exclusions = {p: (s, t) for p, s, t in cursor.execute(
+                            "SELECT path_key,size,mtime_ns FROM catalog_exclusions WHERE root=?", (self.root_key,))}
+                        version = current
+                    publish = pending
+                    if exclusions:
+                        publish = []
+                        for record in pending:
+                            path = record.get("path")
+                            if isinstance(path, str) and exclusions.get(os.path.normcase(path)) == (
+                                    record.get("size"), record.get("mtime_ns")):
+                                omitted += 1
+                                omitted_bytes += record["size"]
+                            else:
+                                publish.append(record)
                     indexed, failed, rejected, committed_bytes, diagnostics = \
-                        self._commit_records(cursor, pending)
+                        self._commit_records(cursor, publish)
                 if touches:
                     cursor.executemany(
                         "UPDATE books SET seen_gen = ? WHERE id = ?",
@@ -1709,6 +1751,8 @@ class TurboScanner:
             # the transaction.  The old writer incremented these counters on
             # dequeue, so a dead transaction could look like successful work.
             with self._lock:
+                self._books_found -= omitted
+                self._bytes_found -= omitted_bytes
                 self._books_indexed += indexed
                 self._books_failed += failed
                 self._books_rejected += rejected

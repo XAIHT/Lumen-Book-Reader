@@ -21,10 +21,14 @@ issues one query instead of one per key.
 from __future__ import annotations
 
 import os
+import sqlite3
+from concurrent.futures import CancelledError
 from pathlib import Path
 
 from PySide6.QtCore import (
     QAbstractListModel,
+    QEventLoop,
+    QThread,
     QModelIndex,
     QRect,
     QSize,
@@ -40,6 +44,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListView,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QToolButton,
     QProgressBar,
     QPushButton,
     QStyle,
@@ -53,6 +61,7 @@ from PySide6.QtWidgets import (
 from .library_index import BookRow, LibraryCounts, LibraryIndex
 from .turbo_scan import ScanSnapshot
 from .book_dates import date_predicate, timestamp_text
+from .catalog_check import check_catalog
 
 PAGE_SIZE = 400
 SEARCH_DEBOUNCE_MS = 140
@@ -251,12 +260,15 @@ class LibraryModel(QAbstractListModel):
                 limit=self.page_size, offset=0, extensions=self._extensions,
                 date_filters=self._date_filters, sort=self._sort,
             )
+            if (not self._total and self._fallback and not self._query and not self._date_filters
+                    and not self.library.count_matching(self.root)):
+                excluded = self.library.catalog_exclusions(self.root)
+                page = [row for row in self._fallback
+                        if excluded.get(os.path.normcase(row.path)) != (row.size, row.mtime_ns)
+                        and (not self._extensions or row.ext in self._extensions)]
+                self._total = len(page)
         except Exception:
             self._total, page = 0, []
-
-        if not self._total and self._fallback and not self._query and not self._date_filters:
-            page = list(self._fallback)
-            self._total = len(page)
 
         self.beginResetModel()
         self._rows = page
@@ -522,6 +534,47 @@ class BookListView(QListView):
 # ────────────────────────────────  shelf  ─────────────────────────────────
 
 
+class _CatalogTask(QThread):
+    progress = Signal(int, int)
+
+    def __init__(self, work):
+        super().__init__()
+        self.work = work
+        self.result = self.error = None
+
+    def run(self):
+        try:
+            self.result = self.work(self.isInterruptionRequested, self.progress.emit)
+        except Exception as exc:
+            self.error = exc
+
+
+def _catalog_work(parent, title, work):
+    """Keep Qt responsive, including during a slow read or an atomic rollback."""
+    task = _CatalogTask(work)
+    dialog = QProgressDialog(title, "Cancel", 0, 0, parent)
+    dialog.setWindowTitle("Library catalog")
+    dialog.setWindowModality(Qt.WindowModality.WindowModal)
+    dialog.setAutoClose(False)
+    dialog.setAutoReset(False)
+    dialog.canceled.connect(task.requestInterruption)
+    def update(value, total):
+        dialog.setRange(0, total)
+        dialog.setValue(value)
+    task.progress.connect(update, Qt.ConnectionType.QueuedConnection)
+    loop = QEventLoop()
+    task.finished.connect(loop.quit)
+    dialog.show()
+    task.start()
+    loop.exec()
+    task.wait()
+    dialog.close()
+    dialog.deleteLater()
+    if task.error is not None:
+        raise task.error
+    return task.result
+
+
 class LibraryShelf(QWidget):
     """The middle-of-the-window list of every book in the datalake."""
 
@@ -534,6 +587,7 @@ class LibraryShelf(QWidget):
         super().__init__(parent)
         self.library = index
         self.root = root
+        self._maintenance_busy = self._sweep_active = False
         self.setObjectName("welcomePage")
 
         root_layout = QVBoxLayout(self)
@@ -684,6 +738,8 @@ class LibraryShelf(QWidget):
         self.view.setItemDelegate(self.delegate)
         self.view.setUniformItemSizes(False)
         self.view.setMouseTracking(True)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._book_menu)
         self.view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -719,6 +775,17 @@ class LibraryShelf(QWidget):
         )
         self.rescan_button.clicked.connect(self.rescan_requested)
         footer.addWidget(self.rescan_button)
+        self.catalog_button = QToolButton()
+        self.catalog_button.setObjectName("catalogTools")
+        self.catalog_button.setText("Catalog tools")
+        self.catalog_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.catalog_button.setToolTip("Check for damaged books or restore removed catalog entries")
+        self.catalog_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.catalog_button)
+        menu.addAction("Check for damaged books…", self._check_damaged)
+        menu.addAction("Allow removed books on next sweep…", self._restore_removed)
+        self.catalog_button.setMenu(menu)
+        footer.addWidget(self.catalog_button)
         root_layout.addLayout(footer)
 
         self._debounce = QTimer(self)
@@ -864,13 +931,14 @@ class LibraryShelf(QWidget):
                 continue
             path = Path(path_text)
             try:
-                size = path.stat().st_size if path.is_file() else 0
+                stat = path.stat()
+                size = stat.st_size if path.is_file() else 0
             except OSError:
                 continue
             if not size:
                 continue
             rows.append(BookRow(
-                path=str(path), name=path.name, ext=path.suffix.casefold(), size=size,
+                path=str(path.absolute()), name=path.name, ext=path.suffix.casefold(), size=size, mtime_ns=stat.st_mtime_ns,
                 title=str(book.get("title") or path.stem),
                 author=str(book.get("author") or "Unknown author"),
             ))
@@ -906,6 +974,113 @@ class LibraryShelf(QWidget):
         if row is not None:
             self.book_requested.emit(row.path)
 
+    def _book_menu(self, point):
+        index = self.view.indexAt(point)
+        row = self.model.row_at(index)
+        if row is None or self._maintenance_busy or self._sweep_active:
+            return
+        root = self.root
+        self.view.setCurrentIndex(index)
+        menu = QMenu(self)
+        remove = menu.addAction("Remove from catalog…")
+        chosen = menu.exec(self.view.viewport().mapToGlobal(point))
+        menu.deleteLater()
+        if chosen == remove and self.root == root and not self._sweep_active:
+            if self._confirm("Remove from catalog?", f"{row.title}\n{row.path}\n\nRemove this entry from this library?"):
+                if self.root != root or self._sweep_active:
+                    return
+                try:
+                    count = self._remove_reviewed(root, [(row.catalog_id, row.path, row.size, row.mtime_ns)])
+                    self.refresh_counts()
+                    if not count:
+                        QMessageBox.information(self, "Catalog changed", "This entry changed; nothing was removed.")
+                except CancelledError:
+                    pass
+                except (OSError, sqlite3.Error) as exc:
+                    QMessageBox.warning(self, "Could not update catalog", str(exc))
+
+    def _confirm(self, title, text, details=""):
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(text)
+        box.setInformativeText("Book files, notes and reading positions stay untouched. "
+                               "Unchanged removed files stay off this shelf until restored in Catalog tools.")
+        if details:
+            box.setDetailedText(details)
+        remove = box.addButton("Remove from catalog", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() == remove
+
+    def _restore_removed(self):
+        root = self.root
+        try:
+            count = len(self.library.catalog_exclusions(root))
+            if not count:
+                QMessageBox.information(self, "Catalog tools", "There are no removed entries for this library.")
+                return
+            if QMessageBox.question(self, "Allow removed books?",
+                    f"Allow the next sweep of this library to include {count:,} removed path(s) again?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Yes and root == self.root and not self._sweep_active:
+                self.library.reset_exclusions(root)
+                self.refresh_counts()
+        except sqlite3.Error as exc:
+            QMessageBox.warning(self, "Could not update catalog", str(exc))
+
+    def _check_damaged(self):
+        if self._maintenance_busy or self._sweep_active:
+            return
+        root, database = self.root, self.library.path
+        self._maintenance_busy = True
+        self._maintenance_controls()
+        try:
+            report = _catalog_work(self, "Checking indexed EPUB and PDF files…",
+                                   lambda cancel, progress: check_catalog(database, root, cancel, progress))
+            if root != self.root or self._sweep_active:
+                return
+            summary = (f"Checked {report.checked:,} indexed books in {root}.\n"
+                       f"Skipped {report.skipped:,} unavailable, changed, protected or unverified files.")
+            if not report.damaged:
+                QMessageBox.information(self, "Catalog check complete", f"No confirmed damaged books.\n\n{summary}")
+                return
+            details = "\n".join(f"{identity[1]} — {reason}" for identity, reason in report.damaged[:200])
+            if len(report.damaged) > 200:
+                details += f"\n…and {len(report.damaged)-200:,} more."
+            if not self._confirm("Review damaged books",
+                    f"Remove {len(report.damaged):,} confirmed damaged entries from the catalog?\n\n{summary}", details):
+                return
+            if root != self.root or self._sweep_active:
+                return
+            count = self._remove_reviewed(root, (identity for identity, _ in report.damaged), verify_files=True)
+            self.refresh_counts()
+            QMessageBox.information(self, "Catalog cleanup complete",
+                                    f"Removed {count:,} of {len(report.damaged):,} reviewed entries. "
+                                    "Changed entries were kept. No book files were deleted.")
+        except CancelledError:
+            pass
+        except Exception as exc:
+            QMessageBox.warning(self, "Catalog check could not finish", str(exc))
+        finally:
+            self._maintenance_busy = False
+            self._maintenance_controls()
+
+    def _maintenance_controls(self):
+        enabled = not self._sweep_active and not self._maintenance_busy
+        self.catalog_button.setEnabled(enabled)
+        self.rescan_button.setEnabled(enabled)
+
+    def _remove_reviewed(self, root, entries, *, verify_files=False):
+        database = self.library.path
+        def apply(cancel, _progress):
+            with LibraryIndex(database) as index:
+                return index.remove_catalog_entries(root, entries, verify_files=verify_files, cancelled=cancel)
+        return _catalog_work(self, "Removing entries from the catalog…", apply)
+
     def _open_selected(self) -> None:
         indexes = self.view.selectionModel().selectedIndexes()
         if indexes:
@@ -918,7 +1093,7 @@ class LibraryShelf(QWidget):
             # An empty shelf is the exact symptom of a library folder pointing
             # somewhere with no books in it, so say so instead of showing a
             # confident "0 of 0" that looks like a working, empty library.
-            self.status.setText("nothing indexed yet — check the library folder, then sweep")
+            self.status.setText("No books in this view — check filters, sweep the folder, or restore entries in Catalog tools.")
             return
         scope = "matching" if self.search.text().strip() else "in library"
         self.status.setText(f"showing {shown:,} of {total:,} {scope}")
@@ -946,7 +1121,8 @@ class LibraryShelf(QWidget):
         swept an empty folder - the numbers are always on it.
         """
         self.progress.show()
-        self.rescan_button.setEnabled(False)
+        self._sweep_active = True
+        self._maintenance_controls()
         if state.phase in {"failing", "error"}:
             self.progress.setRange(0, 1)
             self.progress.setValue(1)
@@ -985,7 +1161,8 @@ class LibraryShelf(QWidget):
         )
 
     def finish_sweep(self) -> None:
-        self.rescan_button.setEnabled(True)
+        self._sweep_active = False
+        self._maintenance_controls()
         self.refresh_counts()
         QTimer.singleShot(8000, self.progress.hide)
 
@@ -1017,6 +1194,10 @@ class LibraryShelf(QWidget):
             #dateHeader {{ color: {colors['muted']}; background: transparent;
                 border: none; padding: 6px 0; font-size: 10px; font-weight: 700; }}
             #dateHeader:hover {{ color: {colors['accent']}; }}
+            #catalogTools {{ color: {colors['fg']}; background: {colors['panel']};
+                border: 1px solid {colors['line']}; border-radius: 8px; padding: 8px 18px 8px 10px; }}
+            #catalogTools:hover {{ border-color: {colors['accent']}; }}
+            #catalogTools:disabled {{ color: {colors['muted']}; }}
             #shelfList {{ background: {colors['panel']}; border: 1px solid {colors['line']};
                           border-radius: 13px; padding: 6px; outline: none; }}
             #chip {{ color: {colors['muted']}; background: transparent;

@@ -379,7 +379,7 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 - **The seek-penalty query is per volume, not per file.** A library spanning two drives is tuned for the volume its root is on.
 - **A RAID or storage pool of spinning disks reports as one seek-bound volume.** Several heads are available but Lumen sizes for one, so such a library sweeps more slowly than the array can manage. Set the process count explicitly to override.
 - **`result_queue_depth` is now machine-aware but still has no control in the Configuration window**, so saving settings resets an explicit value to auto.
-- **The index is a cache, never a source of truth.** Deleting `library-index.db` costs one sweep and nothing else. Your books, reading positions, notes and marks are untouched by anything in this document.
+- **The index is rebuildable.** Deleting `library-index.db` requires a new sweep and resets catalog-only removals. Original books, reading positions, notes and marks are stored separately.
 
 ## Sensible future extensions
 
@@ -387,3 +387,28 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 - Wire the search-backend preference through to `LibraryIndex.search()`, so a registered resident-index kernel is reachable.
 - Make the shard count live: open one connection per shard, sweep and search them in parallel, and let `shard_path()` name the files it already knows how to name.
 - Watch the library folder for changes and sweep incrementally, instead of only on demand and at startup.
+
+## Catalog-only removal and damage checks
+
+Right-click a shelf row to remove that exact entry, or use **Catalog tools**
+beside Sweep to inspect the entire indexed root. Inspection runs serially off
+the UI thread, uses memory rather than extraction directories, checks EPUB
+package/spine and ZIP integrity, and asks MuPDF to open PDFs. Protected,
+unavailable and indeterminate books are not removal candidates. The preview
+precedes any mutation; bulk apply rechecks catalog identity and the on-disk
+size/mtime. Cancelled writes roll back.
+
+One SQLite transaction removes catalog, metadata/content FTS and passage rows,
+advances the MCP corpus revision, and records the root, normalized path, size
+and nanosecond mtime in `catalog_exclusions`. Walkers skip matching versions
+before enqueueing; the writer also checks for removals committed by another
+reader while extraction was in flight. Shelf fallbacks respect exclusions.
+Neither files nor reading state are deleted. Reset exclusions in Catalog tools
+to allow rediscovery on the next sweep; resetting the entire library index
+also resets its exclusions. No MCP write tools or permissions are added.
+
+For native desktop validation, `tools/validate_catalog.ps1` runs the shelf,
+index, sweep and retrieval tests with isolated scratch under the checkout.
+Pass `-ShoterLauncher` and `-PhotoPython` for screenshot evidence; `-Focused`
+selects the catalog-action and sweep suites. The cancellation regression waits
+for a separate Python process to exit, not merely for the sweep to report done.

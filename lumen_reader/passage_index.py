@@ -367,7 +367,7 @@ class _CursorDocumentWriter:
         )
         if cursor.rowcount != 1:
             raise sqlite3.IntegrityError("passage document activation conflict")
-        _bump_corpus_revision(cursor, reason)
+        bump_corpus_revision(cursor, reason)
         return PassageBuildReport(
             book_id=book_id,
             revision=revision,
@@ -569,7 +569,7 @@ class StreamingDocumentWriter:
             )
             if cursor.rowcount != 1:
                 raise sqlite3.IntegrityError("passage document activation conflict")
-            _bump_corpus_revision(cursor, reason)
+            bump_corpus_revision(cursor, reason)
             self.connection.commit()
         except BaseException:
             self.connection.rollback()
@@ -606,7 +606,7 @@ class StreamingDocumentWriter:
         self._closed = True
 
 
-def _bump_corpus_revision(cursor: sqlite3.Cursor, reason: str) -> int:
+def bump_corpus_revision(cursor: sqlite3.Cursor, reason: str) -> int:
     row = cursor.execute(
         "SELECT value FROM rag_meta WHERE key='corpus_revision'"
     ).fetchone()

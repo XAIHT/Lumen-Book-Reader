@@ -37,21 +37,23 @@ import os
 import re
 import shutil
 import sqlite3
+import stat as stat_mode
 import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 from xml.etree import ElementTree as ET
 
 from .text_safety import clean_unicode_text, require_utf8
-from .passage_index import delete_book_passages, ensure_passage_schema
+from .passage_index import bump_corpus_revision, delete_book_passages, ensure_passage_schema
 from .book_dates import (
     DATE_COLUMNS, DATE_METADATA_VERSION, creation_ns, date_order, date_predicate,
     epub_publication, pdf_publication,
 )
 
 BOOK_SUFFIXES = {".epub", ".pdf"}
+CatalogIdentity = tuple[int | None, str, int, int]  # id, path, size, mtime_ns
 
 #: How much extracted text is indexed per book for topic search.  Topic and
 #: subject matter are overwhelmingly decided in the front matter, so a bounded
@@ -121,6 +123,7 @@ class BookRow:
     created_ns: int | None = None
     mtime_ns: int | None = None
     date_metadata_version: int = 0
+    catalog_id: int | None = None
 
     @property
     def kind(self) -> str:
@@ -453,6 +456,10 @@ def walk_library(root: Path, skip: set[str] | None = None) -> Iterator[tuple[str
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS catalog_exclusions (
+    root TEXT NOT NULL, path_key TEXT NOT NULL, size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL, PRIMARY KEY(root,path_key)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS books (
     id          INTEGER PRIMARY KEY,
     root        TEXT    NOT NULL,
@@ -1067,9 +1074,69 @@ class LibraryIndex:
             "SELECT path FROM books WHERE root = ?", (root_key,)
         )]
         self._forget(paths)
+        self.connection.execute("DELETE FROM catalog_exclusions WHERE root=?", (root_key,))
         self.connection.execute("DELETE FROM scan_runs WHERE root = ?", (root_key,))
         self.connection.commit()
         return len(paths)
+
+    def catalog_exclusions(self, root: str | Path) -> dict[str, tuple[int, int]]:
+        return {key: (size, stamp) for key, size, stamp in self.connection.execute(
+            "SELECT path_key,size,mtime_ns FROM catalog_exclusions WHERE root=?", (normalize_root(root),)
+        )}
+
+    def reset_exclusions(self, root: str | Path) -> None:
+        """Allow this library's removed files to be found on its next sweep."""
+        with self.connection:
+            self.connection.execute("DELETE FROM catalog_exclusions WHERE root=?", (normalize_root(root),))
+
+    def remove_catalog_entries(self, root: str | Path, entries: Iterable[CatalogIdentity], *,
+                               verify_files: bool = False, cancelled: Callable[[], bool] = lambda: False) -> int:
+        """Atomically remove confirmed (id, path, size, mtime_ns) identities, never files.
+
+        A null id is a shelf fallback, not permission to delete a different
+        library's indexed book. Bulk cleanup rechecks file versions at commit.
+        """
+        from concurrent.futures import CancelledError
+        key = normalize_root(root)
+        removed = 0
+        with self.connection:
+            cursor = self.connection.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            ids = []
+            for book_id, path, size, stamp in entries:
+                if cancelled():
+                    raise CancelledError()
+                if verify_files:
+                    try:
+                        current = os.lstat(path)
+                    except OSError:
+                        continue
+                    if not stat_mode.S_ISREG(current.st_mode) or (current.st_size, current.st_mtime_ns) != (size, stamp):
+                        continue
+                if book_id is not None:
+                    if not cursor.execute(
+                        "SELECT 1 FROM books WHERE root=? AND id=? AND path=? AND size=? AND mtime_ns=?",
+                        (key, book_id, path, size, stamp),
+                    ).fetchone():
+                        continue
+                    ids.append(book_id)
+                elif cursor.execute("SELECT 1 FROM books WHERE root=? AND path=?", (key, path)).fetchone():
+                    continue  # fallback was replaced by an indexed row during confirmation
+                cursor.execute("INSERT OR REPLACE INTO catalog_exclusions VALUES (?,?,?,?)",
+                               (key, os.path.normcase(path), size, stamp))
+                removed += 1
+            for batch in _chunked(ids, 400):
+                if cancelled():
+                    raise CancelledError()
+                self.drop_fts_rows(cursor, batch)
+                delete_book_passages(cursor, batch)
+                marks = ",".join("?" for _ in batch)
+                cursor.execute(f"DELETE FROM books WHERE id IN ({marks})", batch)
+            if ids:
+                bump_corpus_revision(cursor, "Shelf catalog removal")
+            if cancelled():
+                raise CancelledError()
+        return removed
 
     def free_bytes(self) -> int:
         """Free space on the volume holding the index, or -1 if unknowable.
@@ -1349,6 +1416,7 @@ class LibraryIndex:
         keys = row.keys()
         return BookRow(
             path=row["path"],
+            catalog_id=row["id"],
             name=row["name"],
             ext=row["ext"],
             size=row["size"],

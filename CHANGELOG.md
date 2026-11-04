@@ -15,6 +15,12 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+- The shelf now supports right-click **Remove from catalog…** and a cancellable
+  **Catalog tools → Check for damaged books…** review across the entire indexed
+  library. Neither action deletes source files or reading data. Confirmed
+  removals clear index/search entries and stay excluded across sweeps until
+  the file changes or the user allows rediscovery.
+
 No changes since `v1.8.2`.
 
 ---
