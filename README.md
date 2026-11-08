@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.8.3" src="https://img.shields.io/badge/LUMEN-v1.8.3-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.8.4" src="https://img.shields.io/badge/LUMEN-v1.8.4-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -400,7 +400,7 @@ Full details, including the exact registry surfaces and why each one is there:
 
 Lumen treats book files as untrusted input. EPUB extraction rejects traversal and oversized payloads, active content is removed, rendered chapters use a restrictive content-security policy, and Chromium cannot navigate the reading surface from an ordinary click. PDF pages are rasterized from the original document, while only their aligned text is made interactive.
 
-Reader state, the definition cache, and the library index use the operating system’s application-data directory. Cross-book notes live in <code>lumen-reading-marks.json</code> beside the library so the reading library remains portable. The index holds only what it needs to answer a search — metadata and a bounded slice of each book’s text — and is rebuildable at any time.
+Reader state, the definition cache, and the library index use the operating system’s application-data directory. Cross-book notes live in <code>lumen-reading-marks.json</code> beside the library so the reading library remains portable; the file is created when you first save a mark, not when you open a book. Read-only book folders can be opened normally. On Windows, temporary PDF rendering and EPUB extraction use a Lumen-owned folder under ProgramData, outside user profiles, and are cleaned up when the book closes. The index holds only what it needs to answer a search — metadata and a bounded slice of each book’s text — and is rebuildable at any time.
 
 Run the complete regression suite:
 

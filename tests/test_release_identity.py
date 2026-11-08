@@ -18,11 +18,11 @@ def test_current_release_identity_across_docs_runtime_and_mcp(tmp_path):
     assert expected and get_version() == expected
     checks = {
         "README.md": f"badge/LUMEN-v{expected}-",
-        "CODEX.md": f"Current implementation release: **v{expected}**",
+        "CODEX.md": f"Latest released version: **v{expected}**",
         "LumenBookReader-Spec.md": f"**Server:** Lumen Book Reader {expected}",
         "LumenBookReader-MCPDesign.md": f"**Implemented release:** Lumen Book Reader {expected}",
-        "THIRD_PARTY_NOTICES.md": f"most recent tagged release is {expected}.",
-        "BookDates.md": f"Current development release: **{expected}**",
+        "THIRD_PARTY_NOTICES.md": f"latest released version is {expected}.",
+        "BookDates.md": f"Latest released version: **{expected}**",
         "RELEASING.md": f"## Current release: {expected}",
         "CHANGELOG.md": f"## [{expected}]",
     }

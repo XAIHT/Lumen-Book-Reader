@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1717,7 +1718,7 @@ class ReaderWindow(QMainWindow):
         self._monitor: ScanMonitorDialog | None = None
         self._sweep_timer: QTimer | None = None
         self.theme_colors: dict[str, str] = {}
-        self.marks_store = marks_store or MarksStore(Path.cwd() / MARKS_FILENAME)
+        self.marks_store = marks_store or MarksStore(Path(self.library_root) / MARKS_FILENAME)
         self.book: EpubBook | PdfBook | None = None
         self.chapter_index = 0
         self.scroll_percent = 0.0
@@ -3665,7 +3666,16 @@ class ReaderWindow(QMainWindow):
             self.marks_store.marks.append(mark)
             migrated = True
         if migrated:
-            self.marks_store.save()
+            try:
+                self.marks_store.save()
+            except OSError:
+                # Keep the original bookmarks until their portable copy has
+                # actually been saved. A read-only book folder is still readable.
+                logging.getLogger(__name__).warning(
+                    "Could not migrate bookmarks to %s; originals retained",
+                    self.marks_store.path, exc_info=True,
+                )
+                return
         state["bookmarks"] = []
         self.store.save()
 

@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 from bs4 import BeautifulSoup, Comment, Tag
 
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
+from .runtime_paths import scratch_directory
 from .text_safety import clean_unicode_text
 
 
@@ -63,7 +64,7 @@ class EpubBook:
 
     def __init__(self, path: str | os.PathLike[str]):
         self.path = Path(path).expanduser().resolve()
-        self._temporary = tempfile.TemporaryDirectory(prefix="lumen_epub_")
+        self._temporary = tempfile.TemporaryDirectory(prefix="lumen_epub_", dir=scratch_directory())
         self.extract_dir = Path(self._temporary.name)
         self.opf_path = ""
         self.opf_dir = ""

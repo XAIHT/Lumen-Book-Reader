@@ -13,9 +13,16 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ---
 
-## [Unreleased]
+## [1.8.4] — 2026-11-08
 
-- Align current-release documentation and package metadata with `v1.8.3`.
+### Fixed — opening PDFs from Windows
+
+- Fix startup from Explorer's inherited `System32` directory: read the
+  installer's actual library registry key and use an application-owned library
+  when no folder is configured. Opening PDF/EPUB files no longer creates a
+  marks file or writes relocated marks; unsuccessful bookmark migration keeps
+  the original notes. Windows book-rendering scratch stays outside user profiles.
+- Align release documentation, package metadata, and Windows binaries with `v1.8.4`.
 
 ---
 

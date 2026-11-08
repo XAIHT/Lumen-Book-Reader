@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 import pymupdf
 
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
+from .runtime_paths import scratch_directory
 from .text_safety import clean_unicode_text
 
 
@@ -54,7 +55,7 @@ class PdfBook:
 
     def __init__(self, path: str | os.PathLike[str], password: str = ""):
         self.path = Path(path).expanduser().resolve()
-        self._temporary = tempfile.TemporaryDirectory(prefix="lumen_pdf_")
+        self._temporary = tempfile.TemporaryDirectory(prefix="lumen_pdf_", dir=scratch_directory())
         self.extract_dir = Path(self._temporary.name)
         self.metadata = BookMetadata(title=self.path.stem)
         self.chapters: list[Chapter] = []

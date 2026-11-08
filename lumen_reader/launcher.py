@@ -12,13 +12,14 @@ shell, which is exactly what a developer wants.  An *installed* Lumen has no
 such luxury, so this launcher does the three things that only matter once the
 app has been frozen and registered with Windows:
 
-1. **Anchor the working directory to the book.**  ``app.main`` reads the shelf
-   from ``Path.cwd()`` and stores reading marks in ``lumen-reading-marks.json`` there.
+1. **Anchor the working directory to the book.** This keeps file pickers beside
+   the opened document. The bootstrap independently resolves the library root;
+   loading marks never requires write access to that folder.
    When Explorer opens a ``.epub`` through the file association, the inherited
    cwd is whatever Explorer felt like - often ``C:\\Windows\\system32``.  Left
    alone, Lumen would show an empty shelf and drop the reader's notes into a
-   system folder.  We ``chdir`` to the book's own directory instead, so the
-   shelf lists its siblings and the marks file lands beside the library.
+   system folder. We ``chdir`` to the book's own directory when possible, and
+   pass the absolute path even if changing directory is denied.
 
 2. **Pass an absolute book path.**  Because we just changed directory, a
    relative ``argv[1]`` would no longer resolve.  We hand ``app.main`` the

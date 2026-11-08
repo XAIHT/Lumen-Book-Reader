@@ -21,9 +21,9 @@ def _mark(book: Path, note: str = "Remember this") -> ReadingMark:
     )
 
 
-def test_marks_file_is_created_and_round_trips(tmp_path: Path) -> None:
+def test_marks_file_is_created_on_first_edit_and_round_trips(tmp_path: Path) -> None:
     store = MarksStore(tmp_path / MARKS_FILENAME)
-    assert store.path.exists()
+    assert not store.path.exists()
     book = tmp_path / "book.epub"
     book.touch()
     created = store.add(_mark(book))
@@ -68,5 +68,33 @@ def test_marks_relink_automatically_after_library_folder_moves(tmp_path: Path) -
     relocated = MarksStore(marks_path)
 
     assert relocated.get(mark.id).book_path == str(new_book.resolve())
+    relocated.save()
     persisted = json.loads(marks_path.read_text(encoding="utf-8"))
     assert persisted["marks"][0]["book_path"] == str(new_book.resolve())
+
+
+def test_opening_marks_in_a_read_only_folder_never_writes(tmp_path, monkeypatch):
+    def deny_write(*args, **kwargs):
+        raise PermissionError("Library is read-only")
+
+    monkeypatch.setattr(Path, "write_text", deny_write)
+    store = MarksStore(tmp_path / MARKS_FILENAME)
+    assert store.marks == []
+    assert not store.path.exists()
+
+
+def test_relinking_marks_in_a_read_only_folder_preserves_originals(tmp_path, monkeypatch):
+    book = tmp_path / "moved.pdf"
+    book.touch()
+    mark = _mark(tmp_path / "old" / book.name)
+    marks_path = tmp_path / MARKS_FILENAME
+    original = json.dumps({"version": 1, "marks": [mark.to_dict()]})
+    marks_path.write_text(original, encoding="utf-8")
+
+    def deny_save(*args, **kwargs):
+        raise PermissionError("Library is read-only")
+
+    monkeypatch.setattr(MarksStore, "save", deny_save)
+    store = MarksStore(marks_path)
+    assert store.get(mark.id).book_path == str(book.resolve())
+    assert marks_path.read_text(encoding="utf-8") == original

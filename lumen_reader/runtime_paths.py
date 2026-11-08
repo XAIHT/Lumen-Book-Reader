@@ -1,7 +1,7 @@
 """Qt-free discovery of Lumen's durable runtime files.
 
-The desktop application asks ``QStandardPaths`` for these locations.  The MCP
-sidecar deliberately does not import Qt, but it must resolve the same files.
+The desktop application and MCP sidecar resolve the same files without needing
+Qt to discover them. Defaults mirror ``QStandardPaths`` on each platform.
 Explicit environment/CLI overrides are useful for tests and portable installs;
 the platform defaults mirror the GUI's organization/application names.
 """
@@ -9,11 +9,59 @@ the platform defaults mirror the GUI's organization/application names.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+def scratch_directory() -> Path:
+    """Book extraction/rendering scratch, never inside a Windows user profile."""
+    override = os.environ.get("LUMEN_SCRATCH_DIR")
+    if override:
+        base = Path(override).expanduser()
+    elif sys.platform == "win32":
+        # A separate top-level directory per user avoids depending on write
+        # access to a shared directory first created by another account.
+        identity = os.path.normcase(str(Path.home().resolve()))
+        user_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        program_data = Path(os.environ.get(
+            "ProgramData", os.environ.get("SystemDrive", "C:") + "/ProgramData"
+        ))
+        base = program_data / f"Lumen-Book-Reader-{user_key}" / "scratch"
+    else:
+        base = Path(tempfile.gettempdir()) / f"lumen-reader-{os.getuid()}"
+    base = base.resolve()
+    if sys.platform == "win32":
+        profiles = {
+            Path.home().resolve(),
+            Path(os.environ.get("USERPROFILE", str(Path.home()))).resolve(),
+            Path(os.environ.get("SystemDrive", "C:") + "/Users").resolve(),
+        }
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList") as key:
+                directory, _ = winreg.QueryValueEx(key, "ProfilesDirectory")
+            profiles.add(Path(os.path.expandvars(directory)).resolve())
+        except (ImportError, OSError):
+            pass
+        if any(base.is_relative_to(profile_root) for profile_root in profiles):
+            raise OSError("Lumen's scratch folder must be outside Windows user profiles.")
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return base
+
+
+def configure_process_scratch() -> None:
+    """Keep Qt and child-process temporary folders in the same owned location."""
+    directory = str(scratch_directory())
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        os.environ[name] = directory
+    tempfile.tempdir = directory
 
 
 @dataclass(frozen=True, slots=True)

@@ -126,8 +126,6 @@ class MarksStore:
         self.path = Path(path).expanduser().resolve()
         self.marks: list[ReadingMark] = []
         self.load()
-        if not self.path.exists():
-            self.save()
 
     def load(self) -> None:
         try:
@@ -145,8 +143,9 @@ class MarksStore:
             except (TypeError, ValueError):
                 continue
         self.marks = parsed
-        if self._relink_missing_book_paths():
-            self.save()
+        # Reading a book must not require write access to its folder. Relink
+        # in memory; the next explicit marks edit persists the updated paths.
+        self._relink_missing_book_paths()
 
     def _relink_missing_book_paths(self) -> int:
         """Repair marks after their complete library folder has been moved.
