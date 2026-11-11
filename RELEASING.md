@@ -19,6 +19,16 @@ subsystems with their own design documents, see
 
 ---
 
+## Reading-history preservation
+
+`reading-history.json` is durable user data. Install/repair must preserve an
+existing copy, and uninstall keeps the file and its parent directories while
+clearing the other settings, index and caches. This exception also applies when
+the user skips the optional reading-data export. Normal uninstall additionally
+exports its sessions. Keep the shared preserve list and both built-in fallbacks
+aligned. Validate with `tests/test_reading_history.py`,
+`tests/test_uninstall_export.py` and `tests/test_release_scheme.py`.
+
 ## Current release: 1.8.4
 
 The latest released version is **1.8.4**, including the PDF-opening fix.
@@ -333,7 +343,8 @@ The last row has no counterpart on the install side, and that is the point.
 Since v1.4.1 an uninstall is *total*: configuration, the library index, every
 cache and every `HKCU` key go without asking, because an uninstall that leaves
 the whole configuration behind is not an uninstall. What survives does so by
-being **taken out first** — see *User state* below.
+being **taken out first**, except `reading-history.json`, which also stays in
+place for future installations — see *User state* below.
 
 **`tests/test_release_scheme.py` is the enforcement.** It fails if a ProgID is
 registered but never unregistered, if the two wizards disagree about the

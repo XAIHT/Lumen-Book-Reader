@@ -252,7 +252,7 @@ class LumenInstaller:
     # FAIL-SAFE, never fail-open: keeping a file by mistake is recoverable,
     # deleting the user's settings because a JSON file did not parse is not.
     _PRESERVE_FALLBACK = (
-        MANIFEST_NAME, "Uninstaller.exe", "logs", "library",
+        MANIFEST_NAME, "Uninstaller.exe", "logs", "library", "reading-history.json",
     )
 
     def __init__(self, root: tk.Tk):

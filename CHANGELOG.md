@@ -2,7 +2,8 @@
 
 *Lumen Book Reader · created by Angela López Mendoza · @angelahack1*
 
-Every entry below is derived from what the annotated git tag actually contains,
+Dated implementation notes describe current changes. Versioned entries below
+are derived from what the annotated git tag actually contains,
 not from what a release note remembered afterwards. Git history is never
 rewritten in this project — see the note at the end of this file for the places
 where a tag's message and a tag's contents disagree, recorded rather than
@@ -12,6 +13,16 @@ Versions follow [SemVer](https://semver.org/). Tags are the source of truth for
 the version number; see [RELEASING.md](RELEASING.md).
 
 ---
+
+## Reading history — 2026-11-11
+
+- Added a sortable **Last read** shelf column with local date/time and **Never
+  read** for books without a completed session. Return to library, switching
+  books and closing the app record completion exactly once; failed opens do not.
+- Persisted all completed sessions outside the rebuildable catalog, merging
+  concurrent reader windows atomically. History survives reinstall and uninstall
+  and is included in the reading-data export. Missing books and other libraries'
+  historical entries do not create shelf rows.
 
 ## [1.8.4] — 2026-11-08
 

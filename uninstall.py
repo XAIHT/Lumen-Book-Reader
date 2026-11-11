@@ -27,7 +27,7 @@ association, not a shell cache entry. The old build kept ``%APPDATA%\\Lumen
 Reader`` unless the user ticked a box, which meant an uninstall left the whole
 record of their configuration behind - the opposite of what "uninstall" means.
 
-Exactly two things survive, and each for a reason that outranks tidiness:
+Reading data survives for reasons that outrank tidiness:
 
   * The user's books. Lumen never puts books in the install folder, but if the
     library folder happens to sit inside it, the wizard says so out loud and
@@ -37,6 +37,8 @@ Exactly two things survive, and each for a reason that outranks tidiness:
     where they were. They are EXPORTED first, to a folder the user chooses, as
     one plain JSON file they can keep, move or read without Lumen. Then the
     original is erased with everything else.
+  * Completed reading sessions stay in reading-history.json so the Last read
+    column works after a reinstall. Normal exports include these sessions too.
 
 That ordering is the whole design: ASK, EXPORT, VERIFY, THEN ERASE. Nothing is
 deleted until the export has been written and re-read from disk, because the
@@ -78,6 +80,8 @@ APPDATA_DIR_NAME = "Lumen Reader"        # QApplication.setOrganizationName
 #: than imported because this wizard is deliberately standard-library only - it
 #: has to run after the application it is deleting is already gone.
 MARKS_FILENAME = "lumen-reading-marks.json"
+# Durable across uninstall/reinstall, unlike the generated index and settings.
+HISTORY_FILENAME = "reading-history.json"
 
 
 # ─── Version resolution (identical contract to install.py) ───────────────────
@@ -216,7 +220,7 @@ class LumenUninstaller:
     # Mirrors install.py's fallback. FAIL-SAFE: when the shared list cannot be
     # read we still keep these, because deleting a user's library because a
     # JSON file did not parse is not a recoverable mistake.
-    _KEEP_FALLBACK = ("library",)
+    _KEEP_FALLBACK = ("library", HISTORY_FILENAME)
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -586,6 +590,7 @@ class LumenUninstaller:
             "positions": {},
             "recent_books": [],
             "reading_marks": [],
+            "reading_history": [],
         }
         counts = {"positions": 0, "recent": 0, "marks": 0, "sources": 0}
 
@@ -603,6 +608,11 @@ class LumenUninstaller:
                 payload["recent_books"] = recent
         counts["positions"] = len(payload["positions"])
         counts["recent"] = len(payload["recent_books"])
+
+        for base in (os.path.join(self._appdata_path(), "Lumen"), self._appdata_path()):
+            history = self._read_json(os.path.join(base, HISTORY_FILENAME))
+            if isinstance(history, dict) and isinstance(history.get("sessions"), list):
+                payload["reading_history"].extend(history["sessions"])
 
         seen_marks: set[str] = set()
         for marks_file in self._find_marks_files():
@@ -773,7 +783,7 @@ class LumenUninstaller:
             f"this machine — all configuration, the library index, every cache, "
             f"and every registry key."
             + fate
-            + "\n\nYour books are not touched. Continue?",
+            + "\n\nYour books and last-read session history stay on this computer. Continue?",
             icon="warning", default="no",
         )
         return target if confirmed else None
@@ -1273,6 +1283,8 @@ del /f /q "%~f0" >nul 2>&1
                 print(f"[UNINSTALL] Kept {directory} - it holds your export.")
                 self._kept.append(f"{directory}  (holds your saved reading data)")
                 continue
+            if self._keep_reading_history(directory):
+                continue
             if self._remove_tree(directory):
                 erased += 1
                 print(f"[UNINSTALL] Erased {directory}")
@@ -1297,6 +1309,50 @@ del /f /q "%~f0" >nul 2>&1
         erased += self._drop_vendor_key_if_empty()
         erased += self._purge_shell_history()
         return erased
+
+    def _keep_reading_history(self, directory: str) -> bool:
+        """Keep only the durable history and its parents, clearing other state.
+
+        Even damaged history is preserved: a reinstall must never turn a
+        recoverable user file into lost reading sessions.
+        """
+        protected = {
+            os.path.abspath(os.path.join(directory, relative))
+            for relative in (HISTORY_FILENAME, os.path.join("Lumen", HISTORY_FILENAME))
+            if os.path.lexists(os.path.join(directory, relative))
+        }
+        if not protected:
+            return False
+
+        def is_link(path: str) -> bool:
+            return os.path.islink(path) or getattr(os.path, "isjunction", lambda _path: False)(path)
+
+        if is_link(directory):
+            self._kept.append(f"{directory}  (linked reading-history location)")
+            return True
+
+        def clear_except_history(folder: str) -> None:
+            for name in os.listdir(folder):
+                child = os.path.abspath(os.path.join(folder, name))
+                if child in protected:
+                    continue
+                if any(os.path.commonpath([child, kept]) == child for kept in protected):
+                    if not is_link(child):
+                        clear_except_history(child)
+                    continue
+                try:
+                    if os.path.isdir(child) and not os.path.islink(child):
+                        self._remove_tree(child)
+                    else:
+                        os.remove(child)
+                except OSError as exc:
+                    print(f"[UNINSTALL] Could not remove {child}: {exc}")
+
+        clear_except_history(os.path.abspath(directory))
+        for path in sorted(protected):
+            self._kept.append(f"{path}  (reading history for future installations)")
+            print(f"[UNINSTALL] Kept reading history: {path}")
+        return True
 
     @staticmethod
     def _drop_vendor_key_if_empty() -> int:
@@ -1486,7 +1542,7 @@ del /f /q "%~f0" >nul 2>&1
         if self._kept:
             lines.append(f"Kept in place: {', '.join(self._kept)}")
         if self.skip_save_var.get():
-            lines.append("Reading data:  erased, as you asked.")
+            lines.append("Positions and marks: erased, as you asked. Last-read history is kept.")
         else:
             counts = self._export_counts
             lines.append(f"Reading data:  saved to {self._export_path}")
@@ -1549,7 +1605,8 @@ def run_silent(argv: list[str]) -> int:
     identify as a Lumen installation, and it always EXPORTS the user's reading
     data before erasing anything, because an unattended run must not destroy
     something a person would have been asked about. ``/SAVETO=<dir>`` chooses
-    where; ``/NOSAVE`` opts out and is the only way to lose reading history.
+    where; ``/NOSAVE`` skips exporting positions and marks. Last-read session
+    history is kept in place for future installations either way.
     """
     print(f"{PRODUCT_NAME} silent uninstall  (argv={argv[1:]})")
 

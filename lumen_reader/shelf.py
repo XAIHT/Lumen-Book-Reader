@@ -21,6 +21,7 @@ issues one query instead of one per key.
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 from concurrent.futures import CancelledError
 from pathlib import Path
@@ -62,13 +63,14 @@ from .library_index import BookRow, LibraryCounts, LibraryIndex
 from .turbo_scan import ScanSnapshot
 from .book_dates import date_predicate, timestamp_text
 from .catalog_check import check_catalog
+from .reading_history import ReadingHistoryStore, path_key
 
 PAGE_SIZE = 400
 SEARCH_DEBOUNCE_MS = 140
 ROW_HEIGHT = 74
 ROW_HEIGHT_SNIPPET = 96
 DATE_COLUMN_WIDTH = 132
-DATE_STACK_THRESHOLD = 850
+DATE_STACK_THRESHOLD = 1000
 
 
 #: 1 typographic point is 4/3 of a pixel at Qt's 96-DPI logical resolution.
@@ -189,12 +191,15 @@ class LibraryModel(QAbstractListModel):
 
     countsChanged = Signal(int, int)  # shown, total
 
-    def __init__(self, index: LibraryIndex, root: str, parent: QWidget | None = None):
+    def __init__(self, index: LibraryIndex, root: str, parent: QWidget | None = None,
+                 *, history_store: ReadingHistoryStore | None = None):
         super().__init__(parent)
         # NEVER name this attribute `index`: QAbstractListModel.index() is part
         # of the model API and Qt calls it from C++ on every paint.  Shadowing
         # it with a LibraryIndex kills the view with 'object is not callable'.
         self.library = index
+        self.history_store = history_store
+        self._last_reads: dict[str, int] = {}
         self.root = root
         self.page_size = PAGE_SIZE
         self._rows: list[BookRow] = []
@@ -250,6 +255,14 @@ class LibraryModel(QAbstractListModel):
         return self._total
 
     def refresh(self) -> None:
+        if self.history_store is not None:
+            try:
+                last_reads = self.history_store.last_reads()
+                if last_reads != self._last_reads:
+                    self.library.set_reading_history(last_reads)
+                    self._last_reads = last_reads
+            except (OSError, sqlite3.Error):
+                logging.getLogger(__name__).exception("Could not read reading history; original file kept")
         try:
             self._total = self.library.count_matching(
                 self.root, self._query, mode=self._mode, extensions=self._extensions,
@@ -265,7 +278,15 @@ class LibraryModel(QAbstractListModel):
                 excluded = self.library.catalog_exclusions(self.root)
                 page = [row for row in self._fallback
                         if excluded.get(os.path.normcase(row.path)) != (row.size, row.mtime_ns)
+                        and Path(row.path).is_file()
+                        and Path(row.path).resolve().is_relative_to(Path(self.root).resolve())
                         and (not self._extensions or row.ext in self._extensions)]
+                for row in page:
+                    row.last_read_ns = self._last_reads.get(path_key(row.path))
+                if self._sort.startswith("last_read"):
+                    ascending = self._sort.endswith("_asc")
+                    page.sort(key=lambda row: (row.last_read_ns is None,
+                              (row.last_read_ns or 0) * (1 if ascending else -1), row.path))
                 self._total = len(page)
         except Exception:
             self._total, page = 0, []
@@ -319,6 +340,7 @@ class LibraryModel(QAbstractListModel):
                 f"Published: {row.published_date or 'Unknown'} ({row.publication_source or 'no publication metadata'})",
                 f"File created: {timestamp_text(row.created_ns, local=True) or 'Unknown'} (local time)",
                 f"File modified: {timestamp_text(row.mtime_ns, local=True) or 'Unknown'} (local time)",
+                f"Last read: {timestamp_text(row.last_read_ns, local=True, seconds=True) or 'Never read'} (session closed, local time)",
             ])
             if row.subjects:
                 lines.append(f"Topics: {row.subjects}")
@@ -395,7 +417,7 @@ class BookDelegate(QStyledItemDelegate):
         text_left = badge.right() + 14
         text_width = rect.right() - text_left - 12
         if not self.stacked_dates:
-            text_width -= DATE_COLUMN_WIDTH * 3 + 16
+            text_width -= DATE_COLUMN_WIDTH * 4 + 16
         text_width = max(1, text_width)
 
         # Title
@@ -461,17 +483,19 @@ class BookDelegate(QStyledItemDelegate):
                 ),
             )
 
-        # Three real, aligned date columns; narrow windows put the same columns
+        # Four aligned date columns; narrow windows put the same columns
         # below the identity so the original path never competes with dates.
-        cell_width = (rect.width() - 24) // 3 if self.stacked_dates else DATE_COLUMN_WIDTH
-        start = rect.left() + 12 if self.stacked_dates else rect.right() - 12 - 3 * cell_width
+        cell_width = (rect.width() - 24) // 4 if self.stacked_dates else DATE_COLUMN_WIDTH
+        start = rect.left() + 12 if self.stacked_dates else rect.right() - 12 - 4 * cell_width
         top = rect.bottom() - 51 if self.stacked_dates else rect.top() + 15
         created = timestamp_text(row.created_ns, local=True)
         modified = timestamp_text(row.mtime_ns, local=True)
+        last_read = timestamp_text(row.last_read_ns, local=True, seconds=True)
         values = [
             (row.published_date or "Unknown", {4: "year only", 7: "month precision", 10: "publication date"}.get(len(row.published_date), "not supplied")),
             (created[:10] if created else "Unknown", created[11:] + " · local" if created else "unavailable"),
             (modified[:10] if modified else "Unknown", modified[11:] + " · local" if modified else "unavailable"),
+            (last_read[:10] if last_read else "Never read", last_read[11:] + " · local" if last_read else ""),
         ]
         for column, (value, detail) in enumerate(values):
             cell = QRect(start + column * cell_width, top, cell_width, 24)
@@ -583,7 +607,8 @@ class LibraryShelf(QWidget):
     rescan_requested = Signal()
     configure_requested = Signal()
 
-    def __init__(self, index: LibraryIndex, root: str, parent: QWidget | None = None):
+    def __init__(self, index: LibraryIndex, root: str, parent: QWidget | None = None,
+                 *, history_store: ReadingHistoryStore | None = None):
         super().__init__(parent)
         self.library = index
         self.root = root
@@ -718,18 +743,20 @@ class LibraryShelf(QWidget):
         self.identity_header.clicked.connect(lambda: self._sort_dates("title"))
         self.date_header_layout.addWidget(self.identity_header, 1)
         self.date_headers = []
-        for label, key in (("PUBLISHED", "published"), ("FILE CREATED", "created"), ("FILE MODIFIED", "modified")):
+        for label, key in (("PUBLISHED", "published"), ("FILE CREATED", "created"), ("FILE MODIFIED", "modified"), ("LAST READ", "last_read")):
             button = QPushButton(label + "  ↕")
             button.setObjectName("dateHeader")
             button.setAccessibleName("Sort by " + label.lower())
             button.setToolTip("Click for newest first; click again for oldest first. Unknown dates stay last.")
+            if key == "last_read":
+                button.setToolTip("When a reading session closed, in local time. Click for newest first; click again for oldest first. Never read stays last.")
             button.clicked.connect(lambda _checked=False, field=key: self._sort_dates(field))
             self.date_headers.append((button, label, key))
             self.date_header_layout.addWidget(button)
         root_layout.addWidget(self.date_header)
 
         # ── the virtualized list ───────────────────────────────────────────
-        self.model = LibraryModel(index, root, self)
+        self.model = LibraryModel(index, root, self, history_store=history_store)
         self.model.countsChanged.connect(self._on_counts_changed)
         self.delegate = BookDelegate(self)
         self.view = BookListView()
@@ -805,7 +832,7 @@ class LibraryShelf(QWidget):
             self.view.doItemsLayout()
         self.identity_header.setVisible(not stacked)
         for button, _label, _key in self.date_headers:
-            button.setFixedWidth(max(80, (self.view.viewport().width() - 30) // 3) if stacked else DATE_COLUMN_WIDTH)
+            button.setFixedWidth(max(80, (self.view.viewport().width() - 30) // 4) if stacked else DATE_COLUMN_WIDTH)
         gutter = self.view.width() - self.view.viewport().width()
         self.date_header_layout.setContentsMargins(15, 0, 15 + gutter, 0)
         self.view.viewport().update()

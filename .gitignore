@@ -233,6 +233,9 @@ dist/
 # Private local reading state -- NEVER commit / never push.
 # Contains local file paths, personal notes, quotes and highlights.
 lumen-reading-marks.json
+reading-history.json
+reading-history.json.lock
+reading-history.json.*.pending
 
 # ── Lumen release pipeline artefacts (see RELEASING.md) ──────────────────────
 # Generated on every build from git tags; never hand-edited, never committed.

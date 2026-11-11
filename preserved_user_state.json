@@ -16,10 +16,12 @@
     "Uninstaller.exe",
     "Lumen Book Reader.lnk",
     "logs",
-    "library"
+    "library",
+    "reading-history.json"
   ],
   "keep_on_uninstall": [
-    "library"
+    "library",
+    "reading-history.json"
   ],
   "appdata_dirs": [
     "Lumen Reader"

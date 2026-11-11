@@ -109,11 +109,14 @@ unchanged. Repaired or replaced files with a changed fingerprint can reappear.
 To bring unchanged files back, choose **Catalog tools → Allow removed books on
 next sweep…** and run a sweep. These choices apply to the current library only.
 
-The shelf now shows **Published**, **File created**, and **File modified** columns.
+The shelf shows **Published**, **File created**, **File modified**, and **Last read** columns.
 Click their headings to switch newest/oldest order; use **Apply dates** for an
 inclusive range alongside text search and format filters. Publication metadata
 retains its year/month/day precision; missing values say **Unknown**. File
-dates display in local time, while range filters explicitly use UTC.
+dates display in local time, while range filters explicitly use UTC. Last read
+shows completed sessions, with **Never read** for books without one; its history
+does not require a metadata sweep. Date-range controls apply to publication and
+file dates.
 
 After upgrading, run one ordinary sweep to populate the added fields. Existing
 books use a metadata-only backfill that preserves their full-text and passage
@@ -189,6 +192,22 @@ date filtering stays in SQLite. The capability matrix, future GPU result
 contract and visible validation are in [BookDates.md](BookDates.md).
 
 The design, the schema, the pipeline, the measured numbers, and the current limits are all in **[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md)**.
+
+### Last read and persistent reading history
+
+The library's **Last read** column shows the local date and time (including
+seconds) when a book's reading session closed. Return to the library, open
+another book, or exit Lumen to finish a session. Click the column heading to
+switch between newest and oldest first; **Never read** stays at the bottom.
+Failed opens do not count. Earlier activity without a recorded session is not
+assigned a guessed date.
+
+Completed sessions are saved in `reading-history.json` beside `reader-state.json`
+(normally `%APPDATA%\Lumen Reader\Lumen`). This file survives repairs, upgrades,
+uninstall/reinstall and catalog rebuilds; uninstall also includes the sessions
+in the reading-data export. It is separate from the disposable search index.
+History from other libraries or absent books is retained, but never creates
+entries in the current library. Books are matched by their full original path.
 
 ### Lumen MCP: your complete shelf as on-demand AI context
 

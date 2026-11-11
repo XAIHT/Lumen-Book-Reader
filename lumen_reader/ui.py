@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import quote
+from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QKeySequence, QPixmap, QShortcut
@@ -74,6 +75,7 @@ from .settings_dialog import ConfigurationDialog
 from .shelf import LibraryShelf, source_path_text
 from .turbo_scan import ScanConfig, TurboScanner
 from .storage import ReaderStore
+from .reading_history import HISTORY_FILENAME, ReadingHistoryStore
 from .version import get_version_info
 from .speed_reader import (
     SpeedReaderDialog,
@@ -1713,6 +1715,9 @@ class ReaderWindow(QMainWindow):
         super().__init__()
         self.store = store
         self.library_root = normalize_root(library_root or Path.cwd())
+        self.history_store = ReadingHistoryStore(store.path.with_name(HISTORY_FILENAME))
+        self._reading_session: dict | None = None
+        self._pending_reading_sessions: list[dict] = []
         self.library_index = library_index or LibraryIndex(default_index_path())
         self._scanner: TurboScanner | None = None
         self._monitor: ScanMonitorDialog | None = None
@@ -2017,7 +2022,7 @@ class ReaderWindow(QMainWindow):
         outer.addWidget(self.header)
 
         self.main_stack = QStackedWidget()
-        self.welcome = LibraryShelf(self.library_index, self.library_root)
+        self.welcome = LibraryShelf(self.library_index, self.library_root, history_store=self.history_store)
         self.welcome.browse_requested.connect(self.browse_for_book)
         self.welcome.book_requested.connect(self.open_book)
         self.welcome.rescan_requested.connect(self.rescan_library)
@@ -2410,6 +2415,9 @@ class ReaderWindow(QMainWindow):
             return
 
         old_book = self.book
+        self._finish_reading_session()
+        if old_book:
+            self.save_state()
         self.book = new_book
         if old_book:
             old_book.close()
@@ -2424,6 +2432,11 @@ class ReaderWindow(QMainWindow):
         self._migrate_legacy_bookmarks()
         self._populate_bookmarks()
         self._enter_reading_mode()
+        self._reading_session = {
+            "id": uuid4().hex, "path": str(new_book.path.resolve()),
+            "title": new_book.metadata.title, "author": new_book.metadata.author_line,
+            "opened_ns": time.time_ns(),
+        }
         self.show_chapter(self.chapter_index, self.pending_scroll)
         self._populate_welcome(library_books(Path.cwd()))
         self.store.save()
@@ -2508,9 +2521,15 @@ class ReaderWindow(QMainWindow):
             "(() => { const max = Math.max(document.documentElement.scrollHeight - window.innerHeight, 0);"
             " return max ? window.scrollY / max : 0; })()"
         )
-        self.web.page().runJavaScript(script, self._finish_return_to_library)
+        session = self._reading_session
+        self.web.page().runJavaScript(script, lambda scroll: (
+            self._finish_return_to_library(scroll) if self._reading_session is session else None
+        ))
 
     def _finish_return_to_library(self, scroll: Any = None) -> None:
+        if self.main_stack.currentIndex() == 0:
+            return
+        self._finish_reading_session()
         if isinstance(scroll, (int, float)):
             self.scroll_percent = max(0.0, min(float(scroll), 1.0))
         self.save_state()
@@ -2529,6 +2548,25 @@ class ReaderWindow(QMainWindow):
         self._update_header_responsiveness()
         self.setWindowTitle("Lumen — Book Reader")
         self._populate_welcome(library_books(Path.cwd()))
+        self.welcome.model.refresh()
+
+    def _finish_reading_session(self) -> bool:
+        """Close exactly one session, including when switching books or exiting."""
+        if self._reading_session is not None:
+            self._reading_session["closed_ns"] = time.time_ns()
+            self._pending_reading_sessions.append(self._reading_session)
+            self._reading_session = None
+        while self._pending_reading_sessions:
+            try:
+                self.history_store.record(self._pending_reading_sessions[0])
+            except OSError as exc:
+                logging.getLogger(__name__).exception("Could not save reading history")
+                QMessageBox.warning(self, "Reading history could not be saved",
+                                    f"{exc}\n\nYour existing history has been kept. "
+                                    "This session will be retried while Lumen remains open.")
+                return False
+            self._pending_reading_sessions.pop(0)
+        return True
 
     def _populate_book_panel(self) -> None:
         if not self.book:
@@ -4052,6 +4090,9 @@ class ReaderWindow(QMainWindow):
                 break
 
     def closeEvent(self, event: Any) -> None:
+        if not self._finish_reading_session():
+            event.ignore()
+            return
         if self._speed_target_active:
             self._cancel_speed_start_target()
         # A sweep owns a fleet of real OS processes.  Leaving them running after

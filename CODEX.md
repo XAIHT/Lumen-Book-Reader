@@ -1,5 +1,14 @@
 # CODEX project dossier
 
+Reading history (2026-11-11): the main shelf adds sortable **Last read** with
+**Never read** for books without a completed session. `reading_history.py`
+persists completed sessions beside reader state with process locking and atomic
+replacement. Reader-to-library, book switching and application close finish a
+session exactly once. A temporary SQLite join sorts before pagination without
+adding historical paths to the catalog. Installer/uninstaller protection keeps
+`reading-history.json` across installations, and normal reading-data exports
+include its sessions. See `BookDates.md` and `tests/test_reading_history.py`.
+
 Installation handoff (2026-10-14): `install.py` generates and independently
 verifies `<InstallDir>\LumenBookReader.json` using the extracted `LumenMCP.exe`
 before manifest/registration, and offers Explorer reveal for Tlamatini import.

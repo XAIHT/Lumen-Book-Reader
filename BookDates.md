@@ -16,7 +16,25 @@ MCP, installer and uninstaller were verified as 1.8.0, including real source and
 frozen MCP initialization; see [RELEASING.md](RELEASING.md). The older 1.7.3
 date-feature validation archive below remains historical evidence.
 
-## What the three columns mean
+## Last read: completed reading sessions
+
+The fourth shelf column, **Last read**, records the moment the user returns to
+the library, switches books, or closes the reader. It displays local time to
+the second, sorts the full filtered catalog before pagination, and keeps
+**Never read** entries last in both directions. Failed opens and browsing the
+shelf do not create sessions. Previous activity without a recorded close time
+is not backfilled with an invented date.
+
+`reading-history.json` beside `reader-state.json` stores every completed session
+with a unique ID, original absolute path, title/author and UTC epoch nanoseconds
+for opening and closing. Locked merge and atomic replacement prevent two reader
+windows from overwriting each other. The file is retained across uninstall and
+reinstall and included in the reading-data export. The library index uses a
+connection-local join to this history; it never inserts a historical book into
+the catalog. Rebuilding/pruning the index cannot erase sessions. A book at the
+same original path recovers its history when it returns to the catalog.
+
+## What the publication and file-date columns mean
 
 | Visible column | Source | Precision / unknown behavior | Important distinction |
 |---|---|---|---|
@@ -26,7 +44,7 @@ date-feature validation archive below remains historical evidence.
 
 The shelf always paints the values; tooltips supplement them with provenance.
 Wide windows show date columns beside title, author and original path. Narrow
-windows move the three aligned cells below the book identity, preserving its
+windows move the four aligned cells below the book identity, preserving its
 path and text snippet. Cards remain virtualized and paged (400 rows per page),
 not a widget per book. Night, Paper and Sepia palettes style the new controls.
 

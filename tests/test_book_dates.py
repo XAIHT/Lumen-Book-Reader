@@ -310,7 +310,8 @@ def test_visible_shelf_dates_click_sort_filter_and_open(corpus):
             for width in (800, 1440):
                 shelf.resize(width, 880)
                 QTest.qWait(600)
-                assert shelf.delegate.stacked_dates == (shelf.view.viewport().width() - 6 < 850)
+                from lumen_reader.shelf import DATE_STACK_THRESHOLD
+                assert shelf.delegate.stacked_dates == (shelf.view.viewport().width() - 6 < DATE_STACK_THRESHOLD)
             output = Path(__file__).parents[1] / ".artifacts" / "book-dates"
             output.mkdir(parents=True, exist_ok=True)
             shelf.grab().save(str(output / "visible-shelf.png"))

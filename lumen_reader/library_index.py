@@ -124,6 +124,7 @@ class BookRow:
     mtime_ns: int | None = None
     date_metadata_version: int = 0
     catalog_id: int | None = None
+    last_read_ns: int | None = None
 
     @property
     def kind(self) -> str:
@@ -767,6 +768,28 @@ class LibraryIndex:
         self._adopt_fresh_database()
         self.connection.commit()
 
+        # History is durable user data; this connection-local projection is
+        # disposable and cannot create catalog entries or be pruned by a sweep.
+        self.connection.create_function("lumen_path_key", 1, os.path.normcase, deterministic=True)
+        self.connection.executescript("""
+            CREATE TEMP TABLE reading_history(path TEXT PRIMARY KEY, last_read_ns INTEGER) WITHOUT ROWID;
+            CREATE TEMP VIEW shelf_books AS
+                SELECT b.*, h.last_read_ns FROM main.books b
+                LEFT JOIN reading_history h ON h.path = lumen_path_key(b.path);
+        """)
+
+    def set_reading_history(self, last_reads: dict[str, int]) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM temp.reading_history")
+            self.connection.executemany("INSERT INTO temp.reading_history VALUES (?, ?)", last_reads.items())
+
+    @staticmethod
+    def _shelf_order(sort: str) -> str | None:
+        if sort in {"last_read", "last_read_desc", "last_read_asc"}:
+            direction = "ASC" if sort.endswith("_asc") else "DESC"
+            return f"b.last_read_ns {direction} NULLS LAST,b.id ASC"
+        return date_order(sort)
+
     def _migrate(self) -> None:
         """Bring an index written by an older Lumen up to the current schema.
 
@@ -1290,12 +1313,12 @@ class LibraryIndex:
         expression, parsed_extensions = build_match_expression(query)
         wanted = list(extensions or []) + parsed_extensions
         date_sql, date_params = date_predicate(date_filters)
-        order = date_order(sort)
+        order = self._shelf_order(sort)
         if sort not in {"relevance", "title"} and order is None:
             raise ValueError("Unsupported book sort.")
 
         if not expression:
-            sql = "SELECT b.* FROM books b WHERE root = ?"
+            sql = "SELECT b.* FROM shelf_books b WHERE root = ?"
             parameters: list[Any] = [root_key]
             if wanted:
                 sql += f" AND ext IN ({','.join('?' * len(wanted))})"
@@ -1372,13 +1395,13 @@ class LibraryIndex:
             )
             sql = (
                 f"SELECT {selection} FROM content_fts"
-                " JOIN books b ON b.id = content_fts.book_id"
+                " JOIN shelf_books b ON b.id = content_fts.book_id"
                 " WHERE content_fts MATCH ? AND b.root = ?"
             )
             parameters.extend([expression, root_key])
         elif mode == "all":
             sql = (
-                f"SELECT {selection} FROM books b WHERE b.root = ? AND (b.id IN ("
+                f"SELECT {selection} FROM shelf_books b WHERE b.root = ? AND (b.id IN ("
                 "  SELECT book_id FROM books_fts WHERE books_fts MATCH ?"
                 ") OR b.id IN ("
                 "  SELECT book_id FROM content_fts WHERE content_fts MATCH ?"
@@ -1388,7 +1411,7 @@ class LibraryIndex:
         else:
             sql = (
                 f"SELECT {selection} FROM books_fts"
-                " JOIN books b ON b.id = books_fts.book_id"
+                " JOIN shelf_books b ON b.id = books_fts.book_id"
                 " WHERE books_fts MATCH ? AND b.root = ?"
             )
             parameters.extend([expression, root_key])
@@ -1400,7 +1423,7 @@ class LibraryIndex:
         sql += date_sql
         parameters.extend(date_params)
         if not counting:
-            order = date_order(sort)
+            order = self._shelf_order(sort)
             if order is None:
                 if sort == "title" or mode == "all":
                     order = "b.title COLLATE NOCASE,b.id"
@@ -1431,6 +1454,7 @@ class LibraryIndex:
             publication_source=row["publication_source"] or "",
             created_ns=row["created_ns"], mtime_ns=row["mtime_ns"],
             date_metadata_version=row["date_metadata_version"],
+            last_read_ns=row["last_read_ns"] if "last_read_ns" in keys else None,
         )
 
 

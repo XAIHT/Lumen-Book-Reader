@@ -93,13 +93,13 @@ def creation_ns(stat: Any) -> int | None:
     return int(value) if value is not None else None
 
 
-def timestamp_text(value: int | None, *, local: bool = False) -> str | None:
+def timestamp_text(value: int | None, *, local: bool = False, seconds: bool = False) -> str | None:
     if value is None:
         return None
     try:
         instant = datetime.fromtimestamp(value / 1_000_000_000, timezone.utc)
         if local:
-            return instant.astimezone().strftime("%Y-%m-%d %H:%M")
+            return instant.astimezone().strftime("%Y-%m-%d %H:%M:%S" if seconds else "%Y-%m-%d %H:%M")
         return instant.isoformat(timespec="microseconds").replace("+00:00", "Z")
     except (ValueError, OverflowError, OSError):
         return None
