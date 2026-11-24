@@ -1,7 +1,7 @@
 # Lumen Book Reader MCP — external-client specification
 
 > **Specification version:** 1.0<br>
-> **Server:** Lumen Book Reader 1.8.4<br>
+> **Server:** Lumen Book Reader 1.8.6<br>
 > **MCP SDK validated:** 2.2.0 (including the date extension)<br>
 > **Primary external client:** Tlamatini<br>
 > **Transport in `LumenBookReader.json`:** MCP over STDIO<br>
@@ -151,7 +151,7 @@ real catalog was not changed and its GUI import was not automated by these tests
 | Property | Value |
 |---|---|
 | MCP server name | `Lumen Book Reader` |
-| Application version | `1.8.4` |
+| Application version | `1.8.6` |
 | Default transport | STDIO |
 | Optional local transport | Streamable HTTP |
 | Local HTTP endpoint | `http://127.0.0.1:8765/mcp` |
@@ -404,6 +404,13 @@ patterns, and any `..` path component fail with `INVALID_ARGUMENT`.
 `modified_ns`, `coverage`, and `matched_value`, plus `published_date`,
 `publication_precision`, `publication_source`, `created_ns`, `created_at`,
 `modified_at`, and `date_metadata_indexed`. See [BookDates.md](BookDates.md).
+
+`title` is the book's own metadata title unless that is a producer's leftover —
+a document file name such as `0071613757.pdf`, a path or URL, a `Microsoft Word -`
+label, an identifier, or a placeholder such as `Untitled` — in which case it is
+the file name without its extension, the same title the shelf shows. `name`
+always carries the file name. The rules are in
+[LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md).
 
 A section hit additionally has `match_kind: "section"` and:
 
@@ -1208,7 +1215,7 @@ UNC/device commands, placeholders, and secret-like fields.
 - [x] Arguments are an array; no shell command string is used.
 - [x] Environment contains only deterministic UTF-8/flush controls.
 - [x] MCP SDK 2.1.1 is installed in the descriptor's environment.
-- [x] The environment imports this exact checkout as Lumen 1.8.4.
+- [x] The environment imports this exact checkout as Lumen 1.8.6.
 - [x] STDIO initialization succeeds.
 - [x] Exactly seven public tools are discoverable.
 - [x] Every tool has read-only/non-destructive/idempotent/closed-world annotations.

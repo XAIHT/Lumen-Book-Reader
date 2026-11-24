@@ -29,18 +29,18 @@ exports its sessions. Keep the shared preserve list and both built-in fallbacks
 aligned. Validate with `tests/test_reading_history.py`,
 `tests/test_uninstall_export.py` and `tests/test_release_scheme.py`.
 
-## Current release: 1.8.4
+## Current release: 1.8.6
 
-The latest released version is **1.8.4**, including the PDF-opening fix.
-To rebuild it from `v1.8.4`, use
-`python build_complete_release.py --version 1.8.4` (no `--bump`). This embeds
+The latest released version is **1.8.6**, including the book-title correction.
+To rebuild it from `v1.8.6`, use
+`python build_complete_release.py --version 1.8.6` (no `--bump`). This embeds
 one version in the reader, MCP sidecar, installer, uninstaller, and manifest.
 The manifest records the exact commit and working-tree state. Release tags
 are immutable.
 
 The release archive uses
-`dist/Lumen_Release_v1.8.4_win11x64_<timestamp>.zip`, with its SHA-256 in the
-adjacent `.sha256` file. The unpacked release is `dist/Lumen_Release_v1.8.4`.
+`dist/Lumen_Release_v1.8.6_win11x64_<timestamp>.zip`, with its SHA-256 in the
+adjacent `.sha256` file. The unpacked release is `dist/Lumen_Release_v1.8.6`.
 Older archives and their checksums remain historical artifacts. The installed
 application changes only when upgraded.
 
@@ -91,9 +91,9 @@ then reconnect for new tool discovery. Keep user books, state and notes intact.
 | Goal | Command |
 |---|---|
 | Rebuild the current tagged version | `python build_complete_release.py` |
-| Ship a **patch** (1.8.4 → 1.8.5) | `python build_complete_release.py --bump patch` |
-| Ship a **minor** (1.8.4 → 1.9.0) | `python build_complete_release.py --bump minor` |
-| Ship a **major** (1.8.4 → 2.0.0) | `python build_complete_release.py --bump major` |
+| Ship a **patch** (1.8.6 → 1.8.7) | `python build_complete_release.py --bump patch` |
+| Ship a **minor** (1.8.6 → 1.9.0) | `python build_complete_release.py --bump minor` |
+| Ship a **major** (1.8.6 → 2.0.0) | `python build_complete_release.py --bump major` |
 | A specific version | `python build_complete_release.py --version 2.0.0-rc1` |
 | Iterate on the wizard only | `python build_complete_release.py --skip-app --skip-uninstaller` |
 | Build without tagging | `python build_complete_release.py --bump minor --no-tag` |
@@ -108,7 +108,7 @@ valid SemVer is refused before any stage runs.
 you are happy:
 
 ```powershell
-git push origin v1.8.5  # example: after explicitly creating the next patch tag
+git push origin v1.8.7  # example: after explicitly creating the next patch tag
 ```
 
 > **The pipeline never rewrites history.** Git writes are limited to fetching

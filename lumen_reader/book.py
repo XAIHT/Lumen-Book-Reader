@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup, Comment, Tag
 
+from .book_titles import choose_title
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
 from .runtime_paths import scratch_directory
 from .text_safety import clean_unicode_text
@@ -187,7 +188,7 @@ class EpubBook:
                 elif name == "meta" and node.get("name", "").lower() == "cover":
                     cover_id = node.get("content", "")
             self.metadata = BookMetadata(
-                title=titles[0] if titles else self.path.stem,
+                title=choose_title(titles[0] if titles else "", self.path.name),
                 authors=authors,
                 language=fields.get("language", ""),
                 publisher=fields.get("publisher", ""),

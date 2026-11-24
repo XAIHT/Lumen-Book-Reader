@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.8.4" src="https://img.shields.io/badge/LUMEN-v1.8.4-63d1ad?style=for-the-badge&labelColor=111620"></a>
+  <a href="https://github.com/XAIHT/Lumen-Book-Reader"><img alt="Lumen 1.8.6" src="https://img.shields.io/badge/LUMEN-v1.8.6-63d1ad?style=for-the-badge&labelColor=111620"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/PYTHON-3.10+-4381b3?style=for-the-badge&labelColor=111620"></a>
   <img alt="EPUB and PDF" src="https://img.shields.io/badge/READS-EPUB_·_PDF-f2bd4d?style=for-the-badge&labelColor=111620">
   <img alt="RSVP speed reading" src="https://img.shields.io/badge/CROWN_JEWEL-RSVP-ff7c52?style=for-the-badge&labelColor=111620">
@@ -88,7 +88,7 @@ Ollama is complementary rather than a fallback: deterministic cards can appear f
 
 Lumen keeps a rebuildable index of every book in your library folder, so the shelf can answer questions about thousands of files instantly — including questions about what is *inside* them.
 
-Every shelf card permanently identifies its original file with a visible full path, including books stored directly in the library root. Open a book and that same source identity remains in the reader header beneath the chapter title, with middle elision that preserves the filename and a one-click copy-path control. The complete path is never confined to a hover tooltip.
+Every shelf card permanently identifies its original file with a visible full path, including books stored directly in the library root. Open a book and that same source identity remains in the reader header beneath the chapter title, with middle elision that preserves the filename and a one-click copy-path control. The complete path is never confined to a hover tooltip. A card is titled by the book's own metadata unless a tool wrote it: a PDF whose title is `0071613757.pdf`, `Microsoft Word - Document1` or `Untitled` is shown under its file name instead, as described in [LibraryEngineInLumenReader.md](LibraryEngineInLumenReader.md).
 
 ### Searching the shelf
 

@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from xml.etree import ElementTree as ET
 
 from .text_safety import clean_unicode_text, require_utf8
+from .book_titles import TITLE_POLICY_KEY, TITLE_POLICY_VERSION, choose_title, title_problem
 from .passage_index import bump_corpus_revision, delete_book_passages, ensure_passage_schema
 from .book_dates import (
     DATE_COLUMNS, DATE_METADATA_VERSION, creation_ns, date_order, date_predicate,
@@ -396,7 +397,10 @@ def extract_book(job: Sequence[Any]) -> dict[str, Any]:
         result["title"] = _clean(path.stem)
         return result
 
-    result["title"] = record.get("title") or path.stem
+    # Judged on the repaired text, but stored raw so the repair below still
+    # reports the title among the sanitized fields.
+    title = record.get("title") or ""
+    result["title"] = title if title_problem(_clean(title), path.name, suffix) is None else path.stem
     result["author"] = ", ".join(record.get("authors") or []) or "Unknown author"
     result["publisher"] = record.get("publisher", "")
     result["language"] = record.get("language", "")
@@ -767,6 +771,7 @@ class LibraryIndex:
         ensure_passage_schema(self.connection)
         self._adopt_fresh_database()
         self.connection.commit()
+        self._apply_title_policy()
 
         # History is durable user data; this connection-local projection is
         # disposable and cannot create catalog entries or be pruned by a sweep.
@@ -848,6 +853,50 @@ class LibraryIndex:
         row = self.connection.execute("SELECT 1 FROM books LIMIT 1").fetchone()
         if row is None:
             self._meta_set(FTS_MAP_KEY, "1")
+
+    def _apply_title_policy(self) -> int:
+        """Judge the stored titles again, once for each version of the rules.
+
+        A sweep never re-reads a book whose size and mtime have not changed, so
+        a better rule in :func:`extract_book` alone would only reach books added
+        from now on: every ``0071613757.pdf`` already on the shelf would stay
+        there.  The verdict needs nothing but the stored title and the file
+        name, so this is one read of ``books`` and a write for each title that
+        changes, paid once per policy version rather than once per launch.
+
+        A locked database (a sweep writing from another process) leaves the
+        version unrecorded and the catalog as it was; the next open tries again.
+        The index is a cache, so a delayed correction costs nothing but looks.
+        """
+        if meta_get(self.connection, TITLE_POLICY_KEY) == str(TITLE_POLICY_VERSION):
+            return 0
+        try:
+            with self.connection:
+                cursor = self.connection.cursor()
+                cursor.execute("BEGIN IMMEDIATE")
+                changes = [
+                    (better, row[0])
+                    for row in cursor.execute("SELECT id, title, name, ext FROM books").fetchall()
+                    if (better := choose_title(row[1], row[2], row[3])) != row[1]
+                ]
+                cursor.executemany("UPDATE books SET title = ? WHERE id = ?", changes)
+                for title, book_id in changes:
+                    mapped = cursor.execute(
+                        "SELECT meta_row FROM fts_rowid WHERE book_id = ?", (book_id,)
+                    ).fetchone()
+                    if mapped is not None and mapped[0] is not None:
+                        cursor.execute("UPDATE books_fts SET title = ? WHERE rowid = ?",
+                                       (title, mapped[0]))
+                    else:
+                        # Only the small title index is scanned, never content_fts.
+                        cursor.execute("UPDATE books_fts SET title = ? WHERE book_id = ?",
+                                       (title, book_id))
+                if changes:
+                    bump_corpus_revision(cursor, f"Title policy {TITLE_POLICY_VERSION}")
+                meta_set(self.connection, TITLE_POLICY_KEY, str(TITLE_POLICY_VERSION))
+        except sqlite3.OperationalError:
+            return 0
+        return len(changes)
 
     # ── the FTS rowid map ──────────────────────────────────────────────────
 

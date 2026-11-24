@@ -14,7 +14,35 @@ the version number; see [RELEASING.md](RELEASING.md).
 
 ---
 
-## Reading history — 2026-11-11
+## [1.8.6] — 2026-11-24
+
+Tag `v1.8.6` targets the commit that adds this entry. The following changes
+are present in the tag relative to `v1.8.5`.
+
+### Fixed — book titles
+
+- A book is no longer shown under a producer's leftover. When a title is a file
+  name (`0071613757.pdf`, `fasc0b.dvi`), a path or URL, a `Microsoft Word -`
+  label, an identifier (`PII:`, DOI, content hash, typesetter page range), a
+  placeholder (`Untitled`, `THIS CD PRODUCED BY`, `Título`) or a short code
+  unrelated to the file name, the shelf, title sort, title search, reader header
+  and MCP results use the file name instead. Real short titles that the file is
+  named after (`1984`, `It`, `22/11/63`) are kept; EPUB titles get only the
+  general rules, since a publisher wrote them.
+- Existing catalogs are corrected once, on the first open, in `books` and the
+  title search index, without re-reading any book; the MCP corpus revision is
+  bumped. On a 14,126-book library this corrected 706 titles, 699 of them PDF.
+  Books on disk are never modified.
+- Align release documentation and package metadata with `v1.8.6`.
+
+---
+
+## [1.8.5] — 2026-11-11
+
+Tag `v1.8.5` → `0797f0b53357`. The following changes are present in the tag
+relative to `v1.8.4`.
+
+### Added — reading history
 
 - Added a sortable **Last read** shelf column with local date/time and **Never
   read** for books without a completed session. Return to library, switching
@@ -23,6 +51,10 @@ the version number; see [RELEASING.md](RELEASING.md).
   concurrent reader windows atomically. History survives reinstall and uninstall
   and is included in the reading-data export. Missing books and other libraries'
   historical entries do not create shelf rows.
+- The tag's documentation and `pyproject.toml` still named 1.8.4; its builds
+  took 1.8.5 from the tag. Both are aligned in `v1.8.6`.
+
+---
 
 ## [1.8.4] — 2026-11-08
 

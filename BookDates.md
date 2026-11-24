@@ -1,14 +1,14 @@
 # Book dates: shelf, indexing and MCP reference
 
-Latest released version: **1.8.4**. Implemented in the development tree
+Latest released version: **1.8.6**. Implemented in the development tree
 on 2026-09-23 as `2adaa12`, after the commit targeted by the existing `v1.8.0`
-tag; first contained in `v1.8.1` and carried into `v1.8.4` (see
+tag; first contained in `v1.8.1` and carried into `v1.8.6` (see
 [CHANGELOG.md](CHANGELOG.md)). No publication date is
 invented and no source EPUB/PDF is edited. This is an additive catalog feature;
 the launch descriptor and seven-tool MCP profile remain compatible.
 
 The release archive uses the name
-`dist/Lumen_Release_v1.8.4_win11x64_<timestamp>.zip`; its manifest records
+`dist/Lumen_Release_v1.8.6_win11x64_<timestamp>.zip`; its manifest records
 the exact release commit and its adjacent `.sha256` file verifies the archive.
 A historical full cross-surface identity check covered 1.8.0:
 `dist/Lumen_Release_v1.8.0_win11x64_20260923_150921.zip`, whose reader,

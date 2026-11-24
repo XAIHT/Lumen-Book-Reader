@@ -112,6 +112,14 @@ Each result is normalized to strict UTF-8 twice: once where EPUB/PDF extraction 
 
 Each individual books/FTS/row-map update runs under a savepoint. A data error rolls back only that record and writes a small `ok=false` fallback row where possible; a path that cannot itself be represented is rejected and explicitly counted for retry. Database operational errors are not treated as bad books and are never swallowed. Batch counters move only after the outer transaction commits, so `INDEXED OK`, unreadable, bytes, throughput, and percentage cannot get ahead of durable SQLite state.
 
+### Titles — the book's own, unless a tool wrote it
+
+A PDF's `/Title` is usually set by whatever program produced the file, not by whoever published the book. Measured on a real 14,126-book library, 706 stored titles — 699 of them from its 5,567 PDFs — were leftovers: `0071613757.pdf` (the ISBN the file once had) on *Hacking Exposed 6*, `Microsoft Word - 43A0E3A9-2D54-20F7A6.doc`, `fasc0b.dvi`, `file:///F|/rah/...txt`, `PII: S0040-6031(01)00805-X`, 86 copies of `THIS CD PRODUCED BY`. Sorted by title, they were the first thing the shelf showed.
+
+`lumen_reader/book_titles.py` decides, and the file name is the fallback, because the file name is what the book's owner chose. A title is rejected when it is a document file name, a path or URL, an application label, an identifier, or a known placeholder, or when it has no letters, or is three characters or fewer. The last two are kept whenever the file name begins with the same words, so `1984`, `It` and `22/11/63` survive. A one-word PDF title that shares no word with the file name (`ACmain`, `urbaf2`, `Image4`) is a job name in practice; EPUB titles are exempt from that test, because there it would discard `Olympos` and `Tumbuctú`. The same verdict is used by extraction, by the reader's header and window title, and by the recent-books list.
+
+A sweep never re-reads an unchanged book, so better extraction alone would only reach new books. `LibraryIndex` therefore judges the stored catalog once per `TITLE_POLICY_VERSION`, recorded as `index_meta.title_policy_version`. The verdict needs only the stored title and the file name, so this costs one read of `books` plus one update to `books` and `books_fts` (by rowid through the map below) for each title that changes, and it bumps the MCP corpus revision. If the database is locked by a sweep in another process, the version stays unrecorded and the next open tries again. Books on disk are never modified.
+
 ### The `fts_rowid` map — and why it exists
 
 This is the most expensive lesson in the engine, and it is worth stating plainly because the symptom was so misleading.
@@ -350,7 +358,8 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 | File | Responsibility |
 |---|---|
 | `lumen_reader/turbo_scan.py` | `ScanConfig`, `TurboScanner`, the four pipeline stages, worker telemetry, `extractor_main`, process priority |
-| `lumen_reader/library_index.py` | `LibraryIndex`, the schema, the FTS rowid map, generations and pruning, `search`, `optimize`, root management |
+| `lumen_reader/library_index.py` | `LibraryIndex`, the schema, the FTS rowid map, the one-time title correction, generations and pruning, `search`, `optimize`, root management |
+| `lumen_reader/book_titles.py` | Which title a book is shown under: `title_problem`, `choose_title`, `TITLE_POLICY_VERSION` |
 | `lumen_reader/accel.py` | Hardware probes, the backend registry and resolution, shard addressing, the capacity model |
 | `lumen_reader/scan_monitor.py` | `ScanMonitorDialog`, `CoreGrid`, `Sparkline` |
 | `lumen_reader/settings_dialog.py` | `ConfigurationDialog` and its six tabs |
@@ -365,6 +374,7 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 | `tests/test_turbo_scan.py` | Config round-trips, fleet sizing, pipeline behaviour, malformed-record isolation, fatal-writer shutdown, backend resolution and fallback |
 | `tests/test_library_index.py` | Schema/migration, strict-Unicode extraction, WAL recovery, triage, generations, pruning, search modes, re-sweeping an upgraded index |
 | `tests/test_fts_rowid_map.py` | The map is built once, on the first sweep after the upgrade, and is idempotent |
+| `tests/test_book_titles.py` | Every junk-title shape from the measured library, the real short titles that must survive, sweep extraction, the reader header, and the one-time correction of a stored catalog with and without the rowid map |
 | `tests/test_scan_monitor.py` | Grid geometry invariants under every fleet size and window size |
 | `tests/test_accel.py` | Shard distribution and stability, shard paths, capacity growth, backend status text |
 
@@ -380,6 +390,9 @@ Index scale, measured separately: **27,956 books → 7.79 GB** at a 250,000-char
 - **A RAID or storage pool of spinning disks reports as one seek-bound volume.** Several heads are available but Lumen sizes for one, so such a library sweeps more slowly than the array can manage. Set the process count explicitly to override.
 - **`result_queue_depth` is now machine-aware but still has no control in the Configuration window**, so saving settings resets an explicit value to auto.
 - **The index is rebuildable.** Deleting `library-index.db` requires a new sweep and resets catalog-only removals. Original books, reading positions, notes and marks are stored separately.
+- **The title rules are a deny-list measured on one library.** A producer's leftover in a shape not seen there still reaches the shelf. When a rule is added, `TITLE_POLICY_VERSION` must be bumped so stored catalogs are judged again.
+- **A corrected title is the file name, not recovered metadata.** If a later policy loosens a rule, titles that were already corrected come back only when the book changes or the index is rebuilt.
+- **A build older than the title policy still writes raw titles.** If an older build sweeps an index that is already stamped with the policy version, the books it adds keep their raw titles, because a current build's sweep skips them as unchanged. Deleting the `title_policy_version` row from `index_meta` makes the next open judge the whole catalog again.
 
 ## Sensible future extensions
 

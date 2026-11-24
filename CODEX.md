@@ -1,5 +1,16 @@
 # CODEX project dossier
 
+Book titles (2026-11-24, v1.8.6): `book_titles.py` decides whether a metadata
+title is a title or a producer's leftover (document file name, path/URL,
+`Microsoft Word -` label, identifier, placeholder, unrelated short code) and
+falls back to the file name. Extraction, `PdfBook`/`EpubBook` metadata and the
+recent-books list share the verdict. `LibraryIndex` corrects stored titles once
+per `TITLE_POLICY_VERSION` (`index_meta.title_policy_version`), in `books` and
+`books_fts`, and bumps the MCP corpus revision; a locked database defers it to
+the next open. On the 14,126-book `C:\Books` catalog it corrected 706 titles.
+Books on disk are never modified. See `LibraryEngineInLumenReader.md` and
+`tests/test_book_titles.py`.
+
 Reading history (2026-11-11): the main shelf adds sortable **Last read** with
 **Never read** for books without a completed session. `reading_history.py`
 persists completed sessions beside reader state with process locking and atomic
@@ -24,7 +35,7 @@ validation runner `tools/validate_mcp_install.py`. No public tool schema changes
 > Repository: `C:\Lumen-Book-Reader`
 > Audited revision: `5db5de44a6ad` / tag `v1.5.0`
 > Audit date: 2026-08-23 (`America/Mexico_City`)
-> Latest released version: **v1.8.4** (2026-11-08)
+> Latest released version: **v1.8.6** (2026-11-24)
 
 Build maintenance (2026-09-16): `build_complete_release.py` now uses
 `release_environment.py` to provision isolated `.venv-release` dependencies

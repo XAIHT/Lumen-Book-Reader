@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 import pymupdf
 
+from .book_titles import choose_title
 from .models import BookMetadata, Chapter, SearchResult, TocEntry
 from .runtime_paths import scratch_directory
 from .text_safety import clean_unicode_text
@@ -123,7 +124,7 @@ class PdfBook:
             raise PdfError("This PDF does not contain any pages.")
 
         source = document.metadata or {}
-        title = _clean_text(source.get("title")) or self.path.stem
+        title = choose_title(_clean_text(source.get("title")), self.path.name)
         author = _clean_text(source.get("author"))
         self.metadata = BookMetadata(
             title=title,
